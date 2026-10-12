@@ -6,7 +6,7 @@ import { EN } from '../src/i18n/en';
 /* 多语言扫描：找出源码里含中文的字符串字面量，检查英文字典（i18n.test.ts 和 i18n-report.ts 共用） */
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-export const DIRS = ['core/src', 'siyuan-plugin/src', 'obsidian-plugin/src'].map(d => path.join(ROOT, d));
+export const DIRS = ['core/src'].map(d => path.join(ROOT, d));
 export const CJK = /[㐀-鿿＀-￯　-〿]/;
 
 export interface Lit { file: string; line: number; text: string; template: boolean; interp: boolean }

@@ -179,7 +179,7 @@ function disposeStructure(b: BuiltPalace) {
 export function spawnItem(b: BuiltPalace, item: PalaceItem, catalog: Catalog) {
   // 不认识的类型（更新版本的插件加的）：用占位纸箱，数据原样保留，子物件和绑定照常
   const entry = catalog[item.type] || catalog[UNKNOWN_TYPE];
-  if (!entry) { console.warn(t('[kmind-palace] 未知物件类型'), item.type); return null; }
+  if (!entry) { console.warn(t('[island-palace] 未知物件类型'), item.type); return null; }
   seedFromString(item.id);
   const obj = entry.build(item.params || {});
   mergeInPlace(obj);

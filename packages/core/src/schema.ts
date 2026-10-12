@@ -5,27 +5,28 @@
  * ===================================================================== */
 
 import { materializeDecor } from './decor';
-import type { NumberSet } from './pao';
 import { t } from './i18n';
 
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
 export type Rect = [number, number, number, number]; // x0, z0, x1, z1
 
+/** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的宫殿文件仍然认得出来 */
 export const PALACE_FORMAT = 'kmind-palace';
 /**
- * 数据版本。读到更高版本时拒绝加载（提示升级插件），读到低版本时在 normalizePalace 里逐级迁移。
+ * 数据版本。读到更高版本时拒绝加载（提示升级），读到低版本时在 normalizePalace 里逐级迁移。
  *   1  初版
- *   2  物件可以挂在父物件上（parent，pos / rot 相对父物件）；绑定按部件存（bindings）；记忆路线（routes）
+ *   2  物件可以挂在父物件上（parent，pos / rot 相对父物件）
  *   3  家具默认的摆件（茶几上的书、餐桌上的花瓶……）变成真正的子物件，家具标 params.decor = false
- *   4  compat（最低可读版本）；笔记来源 src；绑定可以公开（share）；媒体 id 改为内容哈希
+ *   4  compat（最低可读版本）；媒体 id 改为内容哈希
  *   5  数字组 numbers（数字记忆）；只是新增可选字段，compat 仍为 4
+ *   6  删除笔记相关的字段：笔记来源 src、记忆路线 routes、数字组 numbers、物件上的绑定 bindings
  *
  * 兼容规则：读取时只看 compat（旧数据没有 compat 时看 version）。
  * 只新增可选字段的改动只提高 PALACE_VERSION；会让旧版本读错的改动才提高 PALACE_COMPAT。
- * 这样好友之间插件版本不一样时，串门大多数情况下仍然打得开。
+ * 6 只是去掉上游写的可选字段，旧版本照样读得懂，所以 compat 仍是 4。
  */
-export const PALACE_VERSION = 5;
+export const PALACE_VERSION = 6;
 /** 读取本版本写出的数据，至少需要的版本 */
 export const PALACE_COMPAT = 4;
 
@@ -81,23 +82,6 @@ export interface PalaceWall {
   paint?: WallPaint[];
 }
 
-/** 记忆桩绑定：物件（或物件的一个部件）→ 宿主中的一个笔记块 */
-export interface LocusBinding {
-  blockId: string;
-  title?: string;
-  boundAt?: number;
-  /** 记忆故事：把笔记内容变成发生在这个位置上的一个小场景（自己写或 AI 编） */
-  story?: string;
-  /** 故事配图（媒体 id） */
-  image?: string;
-  /** 故事写回笔记后，笔记里那一块的 id（再写一次时更新它） */
-  storyNote?: string;
-  /** 笔记来源（见 PalaceDoc.src）；不填表示和宫殿相同 */
-  src?: string;
-  /** 公开这个记忆桩：发布 / 串门时访客能看到它的标题和记忆故事（笔记本身永远不会离开本机） */
-  share?: boolean;
-}
-
 export interface PalaceItem {
   id: string;
   /** 物件类型，对应 catalog 中的构建函数 */
@@ -114,11 +98,6 @@ export interface PalaceItem {
   wall?: string;
   solid?: boolean;
   pickable?: boolean;
-  /**
-   * 记忆桩绑定，按部件存：键是部件编号（slot），'' 表示整件物件。
-   * 部件编号由物件的构建函数定义，例如书架上的一本书 'b:2:5'（第 2 层第 5 本，从下往上、从左往右数，从 0 开始）。
-   */
-  bindings?: Record<string, LocusBinding>;
 }
 
 export interface PalaceGround {
@@ -131,11 +110,6 @@ export interface PalaceDoc {
   version: number;
   /** 读取这份数据至少需要的版本 */
   compat?: number;
-  /**
-   * 绑定的笔记默认来自哪里：'siyuan'（思源）、以后还有 'obsidian:<库名>' 等。
-   * 块 id 在不同的工作空间之间本来就不会重复，所以这里只区分笔记软件；绑定上可以单独覆盖。
-   */
-  src?: string;
   id: string;
   name: string;
   /** 主题色（小镇里的名牌、屋顶）；不填则按 id 从调色板里取 */
@@ -147,25 +121,6 @@ export interface PalaceDoc {
   rooms: PalaceRoom[];
   walls: PalaceWall[];
   items: PalaceItem[];
-  /** 记忆路线：按顺序经过的记忆桩 */
-  routes?: PalaceRoute[];
-  /** 数字组：一串要背的数字沿路线摆成一个个画面（见 pao.ts） */
-  numbers?: NumberSet[];
-}
-
-export interface PalaceRoute {
-  id: string;
-  name: string;
-  /** 依次经过的记忆桩（locusKey：物件 id，或「物件 id#部件编号」） */
-  stops: string[];
-}
-
-/** 笔记来源的显示名 */
-export function noteSourceName(src: string | undefined) {
-  if (!src) return t('其他笔记软件');
-  if (src === 'siyuan') return t('思源笔记');
-  if (src.startsWith('obsidian')) return src.includes(':') ? t('Obsidian（{vault}）', { vault: src.slice(src.indexOf(':') + 1) }) : 'Obsidian';
-  return src;
 }
 
 /** 宫殿内唯一的 id（物件、房间、墙体） */
@@ -174,7 +129,7 @@ export function uid(prefix = '') {
 }
 
 const ID_CHARS = '0123456789abcdefghijklmnopqrstuvwxyz';
-/** 全局唯一的 id（宫殿、岛、世界、路线）：16 位加密随机数 */
+/** 全局唯一的 id（宫殿、岛、世界）：16 位加密随机数 */
 export function gid(prefix = '') {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -183,21 +138,32 @@ export function gid(prefix = '') {
   return prefix + s;
 }
 
+/** 早期版本写在宫殿 / 物件上的笔记相关字段：迁移时按可选字段读出来删掉 */
+interface LegacyNoteFields {
+  src?: unknown;
+  routes?: unknown;
+  numbers?: unknown;
+  binding?: unknown;
+  bindings?: unknown;
+}
+
 /** 从版本 n 升到 n + 1 */
-const MIGRATIONS: Record<number, (d: any) => void> = {
+const MIGRATIONS: Record<number, (d: PalaceDoc) => void> = {
   2(d) {
     // 家具写死的摆件 → 子物件（旧版插件会把它们画两遍，所以要升版本）
     materializeDecor(d.items);
   },
-  3(d) {
-    // 之前的宫殿都是在思源插件里建的
-    if (!d.src) d.src = 'siyuan';
-  },
-  1(d) {
-    // 单个 binding → 按部件的 bindings（'' = 整件物件）
-    for (const it of d.items) {
-      if (it.binding?.blockId) it.bindings = { '': it.binding };
+  5(d) {
+    // 笔记相关的字段都不再使用（笔记来源、记忆路线、数字组，以及单个 / 按部件的绑定）；
+    // 这时数据还是刚从存储里读上来的 JSON，这些字段不在 PalaceDoc 里，按可选字段临时看一眼
+    const old = d as PalaceDoc & LegacyNoteFields;
+    delete old.src;
+    delete old.routes;
+    delete old.numbers;
+    const items = old.items as (PalaceItem & LegacyNoteFields)[];
+    for (const it of items) {
       delete it.binding;
+      delete it.bindings;
     }
   },
 };
@@ -221,21 +187,7 @@ export function normalizePalace(raw: unknown): PalaceDoc {
   // 更新版本写的、但声明兼容的数据：原样保留它的版本号和不认识的字段
   d.version = Math.max(version, PALACE_VERSION);
   d.compat = Math.max(Number(src.compat) || 0, PALACE_COMPAT);
-  for (const it of d.items) {
-    if (!it.bindings) continue;
-    for (const [slot, b] of Object.entries(it.bindings)) if (!b?.blockId) delete it.bindings[slot];
-    if (!Object.keys(it.bindings).length) delete it.bindings;
-  }
   repairTree(d.items);
-  if (d.routes !== undefined) {
-    d.routes = Array.isArray(d.routes) ? d.routes.filter(r => r && r.id && Array.isArray(r.stops)) : [];
-  }
-  if (d.numbers !== undefined) {
-    d.numbers = (Array.isArray(d.numbers) ? d.numbers : [])
-      .filter(n => n && typeof n.id === 'string' && typeof n.digits === 'string')
-      .map(n => ({ ...n, digits: n.digits.replace(/\D+/g, ''), mode: n.mode === 'images' ? 'images' : 'pao', route: typeof n.route === 'string' ? n.route : 'all' }));
-    if (!d.numbers.length) delete d.numbers;
-  }
   return d;
 }
 
@@ -243,106 +195,16 @@ export function clonePalace(d: PalaceDoc): PalaceDoc {
   return JSON.parse(JSON.stringify(d));
 }
 
-// =====================================================================
-// 记忆桩：物件 + 部件
-// =====================================================================
-
-/** 记忆桩的键：整件物件就是物件 id，部件是「物件 id#部件编号」 */
-export function locusKey(itemId: string, slot = '') {
-  return slot ? `${itemId}#${slot}` : itemId;
-}
-
-export function parseLocus(key: string): { itemId: string; slot: string } {
-  const i = key.indexOf('#');
-  return i < 0 ? { itemId: key, slot: '' } : { itemId: key.slice(0, i), slot: key.slice(i + 1) };
-}
-
-export function getBinding(item: PalaceItem | null | undefined, slot = ''): LocusBinding | null {
-  const b = item?.bindings?.[slot];
-  return b?.blockId ? b : null;
-}
-
-/** 绑定 / 解绑（b 为 null）一个部件；没有任何绑定时去掉 bindings 字段 */
-export function setBinding(item: PalaceItem, slot: string, b: LocusBinding | null) {
-  if (b) {
-    item.bindings = { ...(item.bindings || {}), [slot]: b };
-  } else if (item.bindings) {
-    delete item.bindings[slot];
-    if (!Object.keys(item.bindings).length) delete item.bindings;
-  }
-}
-
-export interface BoundLocus {
-  item: PalaceItem;
-  /** 部件编号；'' 表示整件物件 */
-  slot: string;
-  binding: LocusBinding;
-}
-
-const slotOrder = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true });
-
-/** 一件物件上的全部绑定：整件在前，部件按编号排序 */
-export function itemLoci(item: PalaceItem): BoundLocus[] {
-  if (!item.bindings) return [];
-  return Object.keys(item.bindings).filter(s => item.bindings[s]?.blockId).sort(slotOrder)
-    .map(slot => ({ item, slot, binding: item.bindings[slot] }));
-}
-
-/** 宫殿里的全部记忆桩（按物件顺序） */
-export function boundLoci(d: PalaceDoc): BoundLocus[] {
-  return d.items.flatMap(itemLoci);
-}
-
-/**
- * 笔记 id 变了（Obsidian 里文件 / 文件夹改名时，路径就是 id）：改写宫殿里所有引用笔记的地方——
- * 绑定的块和写回的笔记、笔记本书架上「文档书」的部件编号（doc:<id>）、路线里的这些部件、书架的书目文件夹。
- * f 返回新的 id，不变时返回 null。返回是否有改动。
- */
-export function remapNoteIds(d: PalaceDoc, f: (id: string) => string | null): boolean {
-  let changed = false;
-  const map = (id: string | undefined) => {
-    if (!id) return id;
-    const to = f(id);
-    if (to && to !== id) { changed = true; return to; }
-    return id;
-  };
-  const mapSlot = (slot: string) => (slot.startsWith('doc:') ? 'doc:' + map(slot.slice(4)) : slot);
-  for (const it of d.items) {
-    if (it.bindings) {
-      const next: Record<string, LocusBinding> = {};
-      for (const [slot, b] of Object.entries(it.bindings)) {
-        if (b) { b.blockId = map(b.blockId); if (b.storyNote) b.storyNote = map(b.storyNote); }
-        next[mapSlot(slot)] = b;
-      }
-      it.bindings = next;
-    }
-    const src = it.params?.source;
-    if (src && typeof src.path === 'string' && src.path !== '/') src.path = map(src.path);
-    // 书架上单本书的覆盖（doc:<id>）
-    const books = it.params?.books;
-    if (books && typeof books === 'object') it.params.books = Object.fromEntries(Object.entries(books).map(([k, v]) => [mapSlot(k), v]));
-  }
-  for (const r of d.routes || []) {
-    r.stops = r.stops.map(k => { const { itemId, slot } = parseLocus(k); return locusKey(itemId, mapSlot(slot)); });
-  }
-  return changed;
-}
-
 /** 物件参数里引用媒体文件的键（照片、模型），按物件类型 */
 export const MEDIA_PARAMS: Record<string, string[]> = { painting: ['photo'], photoFrame: ['photo'], model: ['src'], rug: ['photo'], poster: ['photo'], mediaConsole: ['photo'] };
 
-/** 宫殿引用的全部媒体 id（物件的照片 / 模型、记忆故事的配图），去重 */
+/** 宫殿引用的全部媒体 id（物件的照片 / 模型），去重 */
 export function palaceMedia(d: PalaceDoc): string[] {
   const out = new Set<string>();
   for (const it of d.items) {
     for (const k of MEDIA_PARAMS[it.type] || []) if (typeof it.params?.[k] === 'string' && it.params[k]) out.add(it.params[k]);
-    for (const b of Object.values(it.bindings || {})) if (b?.image) out.add(b.image);
   }
   return [...out];
-}
-
-export function hasBindings(item: PalaceItem) {
-  return !!item.bindings && Object.values(item.bindings).some(b => b?.blockId);
 }
 
 // =====================================================================

@@ -14,7 +14,7 @@ export interface StorageAdapter {
 }
 
 /* =====================================================================
- * 宫殿存储（与宿主无关；思源存在 data/storage/petal/kmind-palace/，Obsidian 存在库里的数据文件夹）：
+ * 宫殿存储（与宿主无关；放在宿主给的一个数据目录里）：
  *   index.json            宫殿列表 + 上次所在的宫殿
  *   world.json            世界：每座宫殿在岛上的位置、朝向、屋顶
  *   palaces/<id>.json     每座宫殿一个文件（便于多端同步时减少冲突）

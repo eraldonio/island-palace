@@ -1,29 +1,22 @@
 {
-  "name": "kmind-palace",
+  "name": "island-palace",
   "private": true,
   "packageManager": "pnpm@11.15.0",
   "scripts": {
-    "dev:core": "pnpm --filter @kmind-palace/core dev",
-    "dev:siyuan": "pnpm --filter kmind-palace-siyuan dev",
-    "build:siyuan": "pnpm --filter kmind-palace-siyuan build",
+    "dev": "pnpm --filter @island-palace/core dev",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "lint": "eslint packages",
-    "dev:obsidian": "pnpm --filter kmind-palace-obsidian dev",
-    "build:obsidian": "pnpm --filter kmind-palace-obsidian build",
-    "build": "pnpm --filter kmind-palace-obsidian build && node -e \"for (const f of ['main.js', 'styles.css']) require('fs').copyFileSync('packages/obsidian-plugin/dist/' + f, f)\""
+    "lint": "eslint packages"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
     "@eslint/json": "0.14.0",
     "eslint": "^9.39.5",
-    "eslint-plugin-obsidianmd": "0.4.2",
     "globals": "^17.13.0",
     "typescript-eslint": "^8.71.0"
   },
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/suka233/kmind-palace.git"
+    "url": "https://github.com/eraldonio/island-palace.git"
   }
 }

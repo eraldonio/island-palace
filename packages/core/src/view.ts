@@ -7,24 +7,18 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createKit, type Kit } from './kit';
-import { createCatalog, slotLabel, sourceKey, type Catalog } from './catalog';
+import { createCatalog, slotLabel, type Catalog } from './catalog';
 import { buildPalace, buildStructure, itemDisplayName, spawnItem, despawnItem, placeItem, computeColliders, releaseLamps, ownBox, slotBox, findSlot, slotOfHit, traverseOwn, type BuiltPalace } from './build';
 import { Editor } from './editor';
-import { RecallController } from './recall';
-import { NumberController } from './numbers';
 import { ShelfEditor } from './shelf-editor';
-import { SocialController } from './social/controller';
 import { Companion } from './companion';
 import { setLocale, getLocale, t } from './i18n';
-import { Onboarding } from './onboarding';
-import { StoryController } from './stories';
-import { memoryLevel, worstLevel, isDue, type MemoryLevel, type SlotSort } from './route';
 import { WorldLayer, type Shell } from './world-layer';
 import { TownController } from './town-controller';
 import * as W from './world';
-import { getBinding, setBinding, boundLoci, itemLoci, locusKey, parseLocus, noteSourceName, type PalaceDoc, type PalaceItem, type LocusBinding, type BoundLocus } from './schema';
+import type { PalaceDoc, PalaceItem } from './schema';
 import type { PalaceWorld, PlacedPalace, WorldRegion } from './world';
-import type { HostAdapter, Prefs, ReviewState, DocEntry, DocSource } from './host';
+import type { HostAdapter, Prefs } from './host';
 import { ensureStyles } from './styles';
 import { ICONS } from './icons';
 import { html, rich } from './dom';
@@ -32,7 +26,7 @@ import { BEND, bendScene, bendPoint, bendNormal, setBend } from './bend';
 import { PlanetFx } from './planet';
 
 /* =====================================================================
- * PalaceView：把一个「记忆世界」渲染进任意容器（思源页签、Obsidian 视图、网页…）
+ * PalaceView：把一个「岛屿世界」渲染进任意容器（网页、嵌入式视图…）
  * 两个层级，镜头连续过渡：
  *   town    岛上小镇：所有宫殿的外壳 + 屋顶，悬停掀开屋顶预览，双击飞进去
  *   palace  某一座宫殿：2.5D 正交俯视（剖切墙体）+ 第一人称漫游 + 搭建
@@ -41,7 +35,7 @@ import { PlanetFx } from './planet';
  * ===================================================================== */
 
 export interface PalaceViewOptions {
-  /** 往页面里插样式表（默认插）；宿主自己加载样式时传 false（Obsidian 用插件的 styles.css） */
+  /** 往页面里插样式表（默认插）；宿主自己加载样式时传 false */
   injectStyles?: boolean;
   /** 世界（宫殿摆在哪里）；不传时按 docs 自动摆放 */
   world?: PalaceWorld;
@@ -52,26 +46,18 @@ export interface PalaceViewOptions {
   host?: HostAdapter;
   /** 打开后直接进入这座宫殿；不填则停在小镇 */
   enter?: string | null;
-  /** 只读：不能搭建、绑定、编辑，也不保存（网页查看器） */
+  /** 只读：不能搭建、编辑，也不保存（网页查看器） */
   readonly?: boolean;
   /** 界面语言；不给时用 host.locale，再不给按浏览器语言 */
   locale?: string;
 }
 
-/** 正在参观好友的世界：自己的数据先收起来，离开时换回来 */
-interface VisitState {
-  owner: { id: string; name: string };
-  home: { world: PalaceWorld; docs: PalaceDoc[]; region?: string };
-  mediaUrl: (id: string) => string;
-}
-
-/** 只读时不能用的操作（搭建、绑定、编辑类） */
-const READONLY_BLOCK = new Set([
-  'edit', 'bind', 'bindDoc', 'unbind', 'addItem', 'toolRoom', 'toolWall', 'buildPalace', 'townEdit', 'newIsland', 'palaceMove', 'palaceDelete',
-  'palaceColor', 'palaceRoof', 'regionTheme', 'regionDelete', 'regionSettings', 'pickTemplate', 'pickTheme', 'numbers', 'viewJourneys',
-  'routePick', 'routeAuto', 'routeDelete', 'routeAddAll', 'stopUp', 'stopDown', 'stopDel', 'routeJourneyGo',
-]);
-const READONLY_PREFIX = ['story', 'shelf', 'num', 'jp'];
+/** 只读时不能用的操作（搭建、编辑类）；shelfEdit 打开的平面图会改物件参数，也一并挡住 */
+const READONLY_BLOCK: Record<string, true> = {
+  edit: true, addItem: true, toolRoom: true, toolWall: true, buildPalace: true, townEdit: true, newIsland: true,
+  palaceMove: true, palaceDelete: true, palaceColor: true, palaceRoof: true, regionTheme: true, regionDelete: true,
+  regionSettings: true, pickTemplate: true, pickTheme: true, shelfEdit: true,
+};
 
 type Mode = 'iso' | 'walk';
 
@@ -85,7 +71,7 @@ const QUALITY: Record<Quality, { pr: number; ao: boolean; shadow: number; shadow
   medium: { pr: 1.5, ao: false, shadow: 2048, shadowEvery: 2, samples: 4 },
   low: { pr: 1, ao: false, shadow: 1024, shadowEvery: 3, samples: 0 },
 };
-const QUALITY_KEY = 'kmind-palace:quality';
+const QUALITY_KEY = 'island-palace:quality';
 
 /** 按设备猜一个画质档位 */
 function detectQuality(renderer: THREE.WebGLRenderer, mobile?: boolean): Quality {
@@ -183,15 +169,8 @@ export class PalaceView {
   private disposed = false;
   private collidersDirty = false;
   /** @internal */ editor: Editor;
-  /** @internal */ recall: RecallController;
-  /** @internal */ numbers: NumberController;
   /** @internal */ shelfEd: ShelfEditor;
-  /** 串门（宿主提供了 social 时才有） @internal */ social: SocialController | null = null;
-  /** @internal */ stories: StoryController;
   /** 小管家 @internal */ companion: Companion;
-  /** 新手引导、设置 @internal */ guide: Onboarding;
-  /** 记忆桩对应笔记块的复习状态（宿主闪卡），按 blockId @internal */
-  reviewStates = new Map<string, ReviewState>();
 
   /** @internal */ hovered: THREE.Object3D | null = null;
   /** @internal */ selected: THREE.Object3D | null = null;
@@ -200,42 +179,21 @@ export class PalaceView {
   /** @internal */ hoveredSlot = '';
   /** @internal */ lastPointer: PointerEvent | null = null;
   private pointerDown: { x: number; y: number } | null = null;
-  private hoverSince = 0;
-  private previewShownFor: string | null = null;
   private tinted = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
   /** 部件高亮时改过颜色的实例（书架上的书），清除高亮时还原 */
   private tintedInst: { mesh: THREE.InstancedMesh; id: number; color: THREE.Color }[] = [];
   /** 部件高亮时改过顶点色的书脊面片 */
   private tintedVerts: { mesh: THREE.Mesh; start: number }[] = [];
-  /** 书架 = 笔记本：已拉取的书目，按来源 */
-  private shelfDocs = new Map<string, DocEntry[]>();
-  private unwatchDocs: (() => void) | null = null;
-  private docsTimer: number | null = null;
   private mediaUrls = new Map<string, Promise<string>>();
   /** 选中部件时的描边框 */
   private slotOutline: THREE.LineSegments;
   private marker = new THREE.Group();
   private markerLine = new THREE.MeshBasicMaterial({ color: '#ef8235', transparent: true, opacity: .9, depthWrite: false, toneMapped: false });
   private markerFill = new THREE.MeshBasicMaterial({ color: '#ef8235', transparent: true, opacity: .13, depthWrite: false, toneMapped: false });
-  private pinMat = new THREE.MeshStandardMaterial({ color: '#ef8235', roughness: .35, emissive: '#ef8235', emissiveIntensity: .35 });
-  private markMat = new THREE.MeshStandardMaterial({ color: '#ff6a1a', roughness: .4, emissive: '#ff6a1a', emissiveIntensity: .7 });
-  /** 按记忆程度给图钉、书签换色：记得牢 绿 · 学习中 琥珀 · 该复习 红 · 很久没复习 灰（没开始复习的保持橙色） */
-  private levelMats: Partial<Record<MemoryLevel, THREE.MeshStandardMaterial>> = {
-    fresh: new THREE.MeshStandardMaterial({ color: '#4f9a78', roughness: .35, emissive: '#4f9a78', emissiveIntensity: .3 }),
-    learning: new THREE.MeshStandardMaterial({ color: '#e0a23a', roughness: .35, emissive: '#e0a23a', emissiveIntensity: .35 }),
-    due: new THREE.MeshStandardMaterial({ color: '#dc4632', roughness: .35, emissive: '#dc4632', emissiveIntensity: .45 }),
-    stale: new THREE.MeshStandardMaterial({ color: '#9a948c', roughness: .6, emissive: '#6d6862', emissiveIntensity: .15 }),
-  };
-  private webMat: THREE.MeshBasicMaterial | null = null;
-  private pinGeo = { head: new THREE.SphereGeometry(.11, 20, 14), tip: new THREE.ConeGeometry(.065, .2, 16), mark: new THREE.BoxGeometry(1, 1, 1), web: new THREE.PlaneGeometry(1, 1) };
-  private missing = new Set<string>();
-  /** 找不到部件的绑定（例如书架改窄后放不下的书），locusKey 集合 @internal */
-  orphans = new Set<string>();
-
   private walk = {
     pos: new THREE.Vector3(), yaw: 0, pitch: 0, keys: new Set<string>(), bob: 0,
     drag: null as null | { id: number; x: number; y: number; moved: number },
-    joy: { x: 0, y: 0 }, joyId: null as null | number, focus: null as THREE.Object3D | null, focusSlot: '', lastRay: 0,
+    joy: { x: 0, y: 0 }, joyId: null as null | number,
   };
   /** @internal */ raycaster = new THREE.Raycaster();
   /** @internal */ ui: Record<string, HTMLElement> = {};
@@ -243,7 +201,7 @@ export class PalaceView {
   constructor(container: HTMLElement, opts: PalaceViewOptions) {
     setLocale(opts.locale ?? opts.host?.locale ?? (typeof navigator !== 'undefined' ? navigator.language : 'zh-CN'));
     if (opts.injectStyles !== false) ensureStyles(container.ownerDocument);
-    // 宿主的保存接口包一层：只读（网页查看器、参观好友）时一律不保存
+    // 宿主的保存接口包一层：只读（网页查看器）时一律不保存
     const h = opts.host || {};
     const guarded: HostAdapter = Object.create(h);
     if (h.onDocChange) guarded.onDocChange = (d) => { if (!this.readonly) h.onDocChange(d); };
@@ -288,18 +246,16 @@ export class PalaceView {
     this.labelRenderer = new CSS2DRenderer({ element: labels });
 
     this.kit = createKit({ maxAniso: renderer.capabilities.getMaxAnisotropy() });
-    // 构建函数用到的宿主数据：书架书目、用户照片
-    this.kit.runtime.shelfDocs = (src) => this.shelfDocs.get(sourceKey(src)) || null;
+    // 构建函数用到的宿主数据：用户照片
     this.kit.runtime.loadMedia = (id) => this.mediaUrl(id);
     // 照片加载完：高亮用的是材质的克隆，要重新套一次才能带上照片
-    // 模型加载完：物件大小变了，图钉、碰撞体、选中框都要重算
+    // 模型加载完：物件大小变了，碰撞体、选中框都要重算
     this.kit.runtime.onLoaded = () => {
-      if (this.built) { this.collidersDirty = true; this.rebuildPins(); this.updateMarker(); this.editor?.updateRing(); }
+      if (this.built) { this.collidersDirty = true; this.updateMarker(); this.editor?.updateRing(); }
       if (this.selected || this.hovered) this.applyHighlight();
       this.invalidate(2);
     };
     this.catalog = createCatalog(this.kit, 2.8);
-    this.pinGeo.head.userData.shared = this.pinGeo.tip.userData.shared = this.pinGeo.mark.userData.shared = this.pinGeo.web.userData.shared = true;
     this.slotOutline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: '#ef8235', depthTest: false, transparent: true, toneMapped: false }));
     this.slotOutline.renderOrder = 12;
     this.slotOutline.visible = false;
@@ -343,15 +299,9 @@ export class PalaceView {
     this.town.build(this.world, this.docs);
     const settled = this.settleRegions();
     this.editor = new Editor(this);
-    this.recall = new RecallController(this);
-    this.numbers = new NumberController(this);
     this.shelfEd = new ShelfEditor(this);
-    this.stories = new StoryController(this);
     this.townCtl = new TownController(this);
     this.companion = new Companion(this);
-    if (this.host.social) this.social = new SocialController(this);
-    this.guide = new Onboarding(this);
-    this.town.dueOf = (d) => this.dueCount(d);
     this.bindEvents();
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -364,13 +314,6 @@ export class PalaceView {
     this.composer = this.makeComposer(this.isoCam);
     renderer.setAnimationLoop((t) => this.frame(t));
     if ((worldChanged || settled) && opts.world) this.host.onWorldChange?.(this.world);
-    void this.refreshReview();
-    this.guide.start();
-    // 文档新建、删除、改名、移动：刷新书架（防抖）
-    this.unwatchDocs = this.host.watchDocs?.(() => {
-      if (this.docsTimer) window.clearTimeout(this.docsTimer);
-      this.docsTimer = window.setTimeout(() => { this.docsTimer = null; void this.loadShelfSources(true); }, 500);
-    }) || null;
   }
 
   // =====================================================================
@@ -400,50 +343,9 @@ export class PalaceView {
   }
 
   private readonlyOpt = false;
-  /** @internal */ visiting: VisitState | null = null;
 
-  /** 只读：网页查看器，或正在参观好友的世界 */
-  get readonly() { return this.readonlyOpt || !!this.visiting; }
-
-  /** 只读时能不能做这个操作 @internal */
-  blockedWhenReadonly(act: string) {
-    return this.readonly && (READONLY_BLOCK.has(act) || READONLY_PREFIX.some(p => act.startsWith(p)));
-  }
-
-  /**
-   * 参观好友的世界：把好友发布的岛和宫殿换进来（只读），自己的数据先收起来。
-   * enter 给了就直接进那座宫殿。再调一次可以换另一个好友。
-   */
-  visit(v: { owner: { id: string; name: string }; world: PalaceWorld; docs: PalaceDoc[]; enter?: string; mediaUrl: (id: string) => string }) {
-    if (!this.visiting) {
-      this.editor.toggle(false);
-      this.townCtl.beforeLevelChange();
-      this.visiting = { owner: v.owner, home: { world: this.world, docs: [...this.docs.values()], region: this.region?.id }, mediaUrl: v.mediaUrl };
-    } else {
-      this.visiting.owner = v.owner;
-      this.visiting.mediaUrl = v.mediaUrl;
-    }
-    if (this.level === 'palace') this.exitPalace({ instant: true });
-    this.root.classList.add('kp-visiting', 'kp-readonly');
-    this.sync(v.world, v.docs);
-    this.social?.onVisitChanged();
-    if (v.enter && this.docs.has(v.enter)) this.enterPalace(v.enter);
-    else { const r = W.mainRegion(this.world); if (r) this.flyToRegion(r.id, 1.1); }
-  }
-
-  /** 结束参观，回到自己的世界 */
-  leaveVisit() {
-    const s = this.visiting;
-    if (!s) return;
-    if (this.level === 'palace') this.exitPalace({ instant: true });
-    this.visiting = null;
-    this.root.classList.remove('kp-visiting');
-    this.root.classList.toggle('kp-readonly', this.readonlyOpt);
-    this.sync(s.home.world, s.home.docs);
-    const r = s.home.region && this.world.regions.find(x => x.id === s.home.region);
-    if (r) this.flyToRegion(r.id, 1.1);
-    this.social?.onVisitChanged();
-  }
+  /** 只读：网页查看器 */
+  get readonly() { return this.readonlyOpt; }
 
   /** 同步：整个世界和全部宫殿换成新数据 */
   sync(world: PalaceWorld, docs: PalaceDoc[]) {
@@ -472,122 +374,6 @@ export class PalaceView {
     }
     this.townCtl.refresh();
     this.invalidate(3);
-    void this.refreshReview();
-  }
-
-  /** 选中并聚焦当前宫殿里的某个记忆桩：物件 id，或「物件 id#部件编号」 */
-  focusItem(key: string) {
-    const { itemId, slot } = parseLocus(key);
-    const obj = this.built?.itemObjects.get(itemId);
-    if (!obj) return;
-    if (this.mode === 'walk') this.exitWalk();
-    this.select(obj, slot && findSlot(obj, slot) ? slot : '');
-    this.focusSelected();
-  }
-
-  /** 物件绑定关系被外部改动后刷新（例如同步回来的数据） */
-  refreshBindings() {
-    if (!this.built) return;
-    this.rebuildPins();
-    this.updateCounts();
-    if (this.selected) this.showCard(this.selected);
-    this.recall.refresh();
-    this.numbers.refresh();
-    this.invalidate();
-  }
-
-  // =====================================================================
-  // 复习状态（宿主的闪卡）
-  // =====================================================================
-
-  private reviewAt = 0;
-
-  /** 拉取全部宫殿里记忆桩的复习状态；minGap 毫秒内拉过就跳过（在宿主里复习过之后回来时刷新） */
-  async refreshReview(minGap = 0) {
-    const review = this.host.review;
-    if (!review || performance.now() - this.reviewAt < minGap) return;
-    this.reviewAt = performance.now();
-    const ids = new Set<string>();
-    for (const d of this.docs.values()) for (const l of boundLoci(d)) if (this.isLocalNote(l.binding, d)) ids.add(l.binding.blockId);
-    if (!ids.size) return;
-    try {
-      const states = await review.getStates([...ids]);
-      if (this.disposed) return;
-      for (const id of ids) this.reviewStates.set(id, states[id] || { card: false });
-      this.afterReviewChanged();
-    } catch (e) {
-      console.warn('[kmind-palace] 读取复习状态失败', e); // i18n-ignore
-    }
-  }
-
-  /** 一次自评之后更新某个块的状态 @internal */
-  setReviewState(blockId: string, st: ReviewState) {
-    this.reviewStates.set(blockId, st);
-    this.afterReviewChanged();
-  }
-
-  private afterReviewChanged() {
-    if (this.built) this.rebuildPins();
-    this.recall.refresh();
-    for (const s of this.town.shells.values()) this.town.updateTag(s);
-    this.townCtl.refresh();
-    this.invalidate();
-  }
-
-  /** @internal */ memoryOf(blockId: string): MemoryLevel {
-    return memoryLevel(this.reviewStates.get(blockId));
-  }
-
-  /** 宫殿里该复习的记忆桩数 @internal */
-  dueCount(doc: PalaceDoc) {
-    if (!this.host.review) return 0;
-    return boundLoci(doc).filter(l => this.isLocalNote(l.binding, doc) && isDue(this.memoryOf(l.binding.blockId))).length;
-  }
-
-  /**
-   * 绑定 / 书目的笔记在不在当前宿主里（在别的笔记软件里绑定的记忆桩不去打开、不拉标题、不查复习状态） @internal
-   */
-  isLocalNote(b: { src?: string } | null | undefined, doc = this.doc) {
-    if (!b) return true;
-    const src = b.src || doc?.src;
-    // 好友发布的公开副本：笔记不在这里
-    if (src === 'public') return false;
-    const mine = this.host.noteSource;
-    return !mine || !src || src === mine;
-  }
-
-  /** 新的绑定 / 书目记下来源：宫殿还没有来源时就是当前宿主；和宫殿不同时单独记在绑定上 @internal */
-  stampSource<T extends LocusBinding | DocSource>(b: T): T {
-    const mine = this.host.noteSource, doc = this.doc;
-    if (!mine || !doc) return b;
-    if (!doc.src) doc.src = mine;
-    if (doc.src === mine) delete b.src; else b.src = mine;
-    return b;
-  }
-
-  /** 打开别的笔记软件里的笔记时的提示 */
-  private foreignNotice(b: { src?: string }) {
-    this.host.notify?.(t('这个记忆桩绑定的是{app}里的笔记，在这里打不开', { app: t(noteSourceName(b.src || this.doc?.src)) }));
-  }
-
-  /** 当前宫殿的全部记忆桩 @internal */
-  allLoci() {
-    return this.doc ? boundLoci(this.doc) : [];
-  }
-
-  /** 部件按显示名排（书架：从上往下、从左往右） @internal */
-  slotSort: SlotSort = (item, a, b) => slotLabel(this.catalog, item, a).localeCompare(slotLabel(this.catalog, item, b), getLocale() === 'zh-CN' ? 'zh' : 'en', { numeric: true });
-
-  /** 记忆桩在场景里的位置：部件的中心，或整件物件的顶面中心 @internal */
-  locusAnchor(item: PalaceItem, slot = ''): THREE.Vector3 | null {
-    const obj = this.built?.itemObjects.get(item.id);
-    if (!obj) return null;
-    const sb = slot ? slotBox(obj, slot) : null;
-    if (sb) return sb.getCenter(new THREE.Vector3());
-    const b = ownBox(obj);
-    const c = b.getCenter(new THREE.Vector3());
-    c.y = b.max.y;
-    return c;
   }
 
   dispose() {
@@ -599,7 +385,6 @@ export class PalaceView {
     this.editor.dispose();
     this.townCtl.dispose();
     this.companion.dispose();
-    this.guide.dispose();
     this.orbit.dispose();
     this.clearTint();
     if (this.built) this.disposeBuilt(this.built);
@@ -612,15 +397,7 @@ export class PalaceView {
     this.gtao?.dispose();
     this.envRT.dispose();
     this.kit.dispose();
-    this.markerLine.dispose(); this.markerFill.dispose(); this.pinMat.dispose(); this.markMat.dispose();
-    this.pinGeo.head.dispose(); this.pinGeo.tip.dispose(); this.pinGeo.mark.dispose(); this.pinGeo.web.dispose();
-    Object.values(this.levelMats).forEach(m => m.dispose());
-    if (this.webMat) { this.webMat.map?.dispose(); this.webMat.dispose(); }
-    this.recall.dispose();
-    this.numbers.dispose();
-    this.social?.dispose();
-    this.unwatchDocs?.();
-    if (this.docsTimer) window.clearTimeout(this.docsTimer);
+    this.markerLine.dispose(); this.markerFill.dispose();
     this.slotOutline.geometry.dispose(); (this.slotOutline.material as THREE.Material).dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -628,14 +405,6 @@ export class PalaceView {
   }
 
   invalidate(frames = 2) { this.dirty = Math.max(this.dirty, frames); }
-
-  /** 右侧的面板（好友、小管家、留言板、设置）同时只开一个 @internal */
-  closeSidePanels(except?: 'social' | 'pet' | 'guest' | 'settings') {
-    if (except !== 'social' && this.social?.panelOpen) this.social.togglePanel(false);
-    if (except !== 'guest') this.social?.closeGuestbook();
-    if (except !== 'pet' && this.companion?.panelOpen) this.companion.togglePanel(false);
-    if (except !== 'settings' && this.guide?.settingsOpen) this.guide.toggleSettings(false);
-  }
 
   /** 第一人称时人站在哪（平面坐标）；俯视时为 null @internal */
   walkPosition(): THREE.Vector3 | null { return this.mode === 'walk' ? this.walk.pos : null; }
@@ -679,12 +448,11 @@ export class PalaceView {
   }
 
   /** 进入宫殿：镜头从小镇飞进去，屋顶掀开、墙体落下 */
-  /** focusItem：进门后聚焦的记忆桩（物件 id，或「物件 id#部件编号」） */
-  enterPalace(id: string, opts: { instant?: boolean; focusItem?: string; flown?: boolean; recall?: boolean } = {}) {
+  enterPalace(id: string, opts: { instant?: boolean; flown?: boolean } = {}) {
     const doc = this.docs.get(id), placed = this.placementOf(id);
     if (!doc || !placed || this.disposed) return;
     if (this.level === 'palace') {
-      if (this.doc?.id === id) { if (opts.focusItem) this.focusItem(opts.focusItem); if (opts.recall) this.recall.onEntered(); return; }
+      if (this.doc?.id === id) return;
       // 宫殿之间直接切换：淡出淡入
       this.fade(() => {
         this.exitPalace({ instant: true });
@@ -719,7 +487,6 @@ export class PalaceView {
     this.doc = doc;
     this.loadPalace(doc, b);
     this.hideActiveShell();
-    this.social?.onPalaceEntered();
     const shell = this.town.shells.get(id);
     if (shell) { this.setLiftDir(shell); shell.liftTarget = 1; if (opts.instant) this.town.setLift(id, 1); }
     this.root.classList.remove('kp-level-town');
@@ -727,12 +494,7 @@ export class PalaceView {
     this.fitSun();
     this.applyNight(this.night);
     this.editor.reset();
-    this.recall.reset();
-    this.numbers.reset();
     this.shelfEd.close();
-    this.missing.clear();
-    void this.refreshTitles();
-    void this.refreshReview(30e3);
     this.host.onLocationChange?.(id, t(doc.name));
     const snapAz = this.snappedAz();
     if (opts.instant) {
@@ -743,14 +505,8 @@ export class PalaceView {
       this.isoCam.lookAt(this.orbit.target);
       this.orbit.update();
       this.cutWallsNow();
-      if (opts.focusItem) this.focusItem(opts.focusItem);
-      if (opts.recall) this.recall.onEntered();
     } else {
       this.tweenCam({ az: snapAz, el: ELEV, target: this.homeTarget, zoom: 1, dur: 1.15 });
-      if (opts.focusItem || opts.recall) this.afterTween = () => {
-        if (opts.focusItem) this.focusItem(opts.focusItem);
-        if (opts.recall) this.recall.onEntered();
-      };
     }
     this.invalidate(3);
   }
@@ -763,15 +519,11 @@ export class PalaceView {
       else { this.fade(() => { this.leaveWalkNow(); this.exitPalace({ instant: true }); }); return; }
     }
     this.editor.toggle(false);
-    this.recall.reset();
-    this.numbers.reset();
     this.shelfEd.close();
     this.companion.leavePalace();
-    this.social?.onPalaceLeft();
     this.select(null);
     this.hovered = null;
     this.ui.tip.classList.remove('kp-on');
-    this.ui.loci.classList.add('kp-hidden');
     const doc = this.doc, id = doc.id, placed = this.placementOf(id), b = this.built;
     // 宫殿里可能改了结构：重建外壳和小镇地形
     this.refreshShell(id, false);
@@ -784,12 +536,10 @@ export class PalaceView {
     this.level = 'town';
     this.doc = null;
     this.built = null;
-    this.walk.focus = null;
     if (b) {
       M.decompose(b.root.position, b.root.quaternion, b.root.scale);
       b.labels.forEach(l => l.visible = false);
       b.indoorOnly.forEach(o => o.visible = false);
-      b.root.traverse(o => { if (o.userData.overlay) o.visible = false; });
       this.peek = { id, built: b, open: false };
       if (opts.instant) this.finishPeek();
     }
@@ -986,27 +736,22 @@ export class PalaceView {
     const obj = spawnItem(b, item, this.catalog);
     this.applyNightToNew();
     if (wasSelected) this.selected = obj;
-    this.rebuildPins();
     this.applyHighlight();
     this.updateMarker();
     this.editor.updateRing();
     this.invalidate();
   }
 
-  /** 物件数据变化后的统一收尾：图钉、计数、卡片、碰撞体、保存 @internal */
+  /** 物件数据变化后的统一收尾：计数、卡片、碰撞体、保存 @internal */
   afterItemsChanged() {
     this.collidersDirty = true;
-    this.rebuildPins();
     this.updateCounts();
     this.applyHighlight();
     this.updateMarker();
     this.editor.updateRing();
     this.showCard(this.selected);
     this.emitChange();
-    this.recall.refresh();
-    this.numbers.refresh();
     this.shelfEd.refresh();
-    void this.loadShelfSources();
     this.invalidate();
   }
 
@@ -1029,50 +774,13 @@ export class PalaceView {
     this.homeH = doc.wallHeight ?? 2.8;
     built.indoorOnly.forEach(o => o.visible = this.mode === 'walk');
     built.labels.forEach(l => l.visible = this.mode !== 'walk');
-    built.root.traverse(o => { if (o.userData.overlay) o.visible = true; });
     this.applyNightToNew();
-    this.rebuildPins();
     this.updateCounts();
-    void this.loadShelfSources();
     this.companion?.onPalaceLoaded();
-    this.guide?.onPalaceEntered();
-  }
-
-  /**
-   * 书架 = 笔记本：拉取当前宫殿用到的书目；书目有变化（或第一次拉到）的书架重建。
-   * force 时重新拉取全部（文档树变了）；否则只拉还没有缓存的来源。
-   */
-  private async loadShelfSources(force = false) {
-    const doc = this.doc;
-    if (!doc || !this.host.listDocs) return;
-    const shelves = doc.items.filter(i => i.type === 'bookshelf' && i.params?.source?.box && this.isLocalNote(i.params.source, doc));
-    const sources = new Map<string, DocSource>();
-    for (const it of shelves) sources.set(sourceKey(it.params.source), it.params.source);
-    const changed = new Set<string>();
-    await Promise.all([...sources].map(async ([key, src]) => {
-      if (!force && this.shelfDocs.has(key)) return;
-      try {
-        const docs = await this.host.listDocs(src);
-        const old = this.shelfDocs.get(key);
-        if (old && JSON.stringify(old) === JSON.stringify(docs)) return;
-        this.shelfDocs.set(key, docs);
-        changed.add(key);
-      } catch (e) {
-        console.warn('[kmind-palace] 读取书目失败', src, e); // i18n-ignore
-      }
-    }));
-    if (this.disposed || this.doc !== doc || !changed.size) return;
-    for (const it of shelves) if (changed.has(sourceKey(it.params.source))) this.respawn(it);
-    if (force) void this.refreshTitles();
-    this.updateCounts();
-    this.recall.refresh();
-    if (this.selected) this.showCard(this.selected);
   }
 
   /** 读取用户照片（同一张只读一次） @internal */
   mediaUrl(id: string) {
-    // 参观好友时，照片和模型从串门服务器读（文件名是内容哈希，和本机的缓存不会混）
-    if (this.visiting) return Promise.resolve(this.visiting.mediaUrl(id));
     let p = this.mediaUrls.get(id);
     if (p === undefined) {
       if (!this.host.loadMedia) return Promise.reject(new Error(t('当前环境不能读取媒体')));
@@ -1081,13 +789,6 @@ export class PalaceView {
       p.catch(() => this.mediaUrls.delete(id));
     }
     return p;
-  }
-
-  /** 书架上某本「文档书」的文档（笔记本书架） @internal */
-  docOfSlot(item: PalaceItem, slot: string): DocEntry | null {
-    if (!slot.startsWith('doc:') || !item.params?.source) return null;
-    const id = slot.slice(4);
-    return this.shelfDocs.get(sourceKey(item.params.source))?.find(d => d.id === id) || { id, title: id };
   }
 
   /** 墙体直接切到当前视角下的剖切高度（不做动画） */
@@ -1139,7 +840,6 @@ export class PalaceView {
     b.labels.forEach(l => l.visible = this.mode !== 'walk');
     this.fitSun();
     this.collidersDirty = true;
-    this.rebuildPins();
     this.applyHighlight();
     this.updateMarker();
     this.editor.onStructureRebuilt();
@@ -1169,110 +869,11 @@ export class PalaceView {
     });
   }
 
-  /**
-   * 记忆桩标记：绑定了的物件头顶一枚图钉；绑定了的部件（书）插一张书签。
-   * 找不到部件的绑定（书架改窄后放不下的书）记为 orphans。 @internal
-   */
-  rebuildPins() {
-    const b = this.built;
-    if (!b) return;
-    this.orphans.clear();
-    const box3 = new THREE.Box3();
-    for (const obj of b.pickables) {
-      for (const c of [...obj.children]) if (c.userData.overlay) obj.remove(c);
-      const item = obj.userData.item as PalaceItem;
-      const loci = itemLoci(item);
-      pullSlots(obj, loci.map(l => l.slot).filter(Boolean));
-      if (!loci.length) continue;
-      obj.updateMatrixWorld(true);
-      ownBox(obj, box3);
-      const pin = new THREE.Group();
-      pin.name = 'kp-pin';
-      pin.userData.overlay = true;
-      const head = new THREE.Mesh(this.pinGeo.head, this.pinMat);
-      head.position.y = .26;
-      const tip = new THREE.Mesh(this.pinGeo.tip, this.pinMat);
-      tip.rotation.x = Math.PI; tip.position.y = .1;
-      pin.add(head, tip);
-      const top = new THREE.Vector3((box3.min.x + box3.max.x) / 2, box3.max.y + .06, (box3.min.z + box3.max.z) / 2);
-      pin.position.copy(obj.worldToLocal(top));
-      pin.quaternion.copy(obj.getWorldQuaternion(new THREE.Quaternion()).invert());
-      // 只绑了部件时图钉小一号；颜色按最该复习的那个记忆桩
-      if (!getBinding(item)) pin.scale.setScalar(.7);
-      const lv = worstLevel(loci.map(l => this.memoryOf(l.binding.blockId)));
-      const pm = this.levelMats[lv] || this.pinMat;
-      head.material = tip.material = pm;
-      obj.add(pin);
-      if (lv === 'stale') this.addCobwebs(obj);
-      for (const { slot } of loci) {
-        if (!slot) continue;
-        const lb = slotBox(obj, slot, box3, true);
-        if (!lb) { this.orphans.add(locusKey(item.id, slot)); continue; }
-        // 书签：书顶靠前露出一截，书脊正面再贴一道书标（俯视、平视都看得见）
-        const w = lb.max.x - lb.min.x, h = lb.max.y - lb.min.y, cx = (lb.min.x + lb.max.x) / 2;
-        const mm = this.levelMats[this.memoryOf(getBinding(item, slot).blockId)] || this.markMat;
-        const tab = new THREE.Mesh(this.pinGeo.mark, mm);
-        tab.scale.set(Math.min(w * .8, .03), .1, .004);
-        tab.position.set(cx, lb.max.y + .02, lb.max.z - .015);
-        const band = new THREE.Mesh(this.pinGeo.mark, mm);
-        band.scale.set(w + .004, Math.min(.035, h * .16), .006);
-        band.position.set(cx, lb.min.y + h * .72, lb.max.z + .001);
-        for (const m of [tab, band]) {
-          m.name = 'kp-mark';
-          m.userData.overlay = true;
-          m.userData.slot = slot;
-          obj.add(m);
-        }
-      }
-    }
-  }
-
-  /** 很久没复习的物件：顶上两个角结上蜘蛛网 */
-  private addCobwebs(obj: THREE.Object3D) {
-    const mat = this.webMat ||= cobwebMaterial();
-    const lb = ownBox(obj, new THREE.Box3(), true);
-    const w = lb.max.x - lb.min.x, h = lb.max.y - lb.min.y;
-    const size = THREE.MathUtils.clamp(Math.min(w, h) * .45, .16, .42);
-    for (const side of [-1, 1]) {
-      const web = new THREE.Mesh(this.pinGeo.web, mat);
-      web.name = 'kp-web';
-      web.userData.overlay = true;
-      web.raycast = () => { /* 不挡拾取 */ };
-      web.scale.set(size * side, size, 1);
-      web.position.set(side < 0 ? lb.min.x + size / 2 : lb.max.x - size / 2, lb.max.y - size / 2, lb.max.z + .006);
-      web.renderOrder = 3;
-      obj.add(web);
-    }
-  }
-
   private updateCounts() {
     if (!this.doc) return;
     const total = this.built?.pickables.length ?? 0;
-    const bound = boundLoci(this.doc).length;
     this.ui.title.textContent = t(this.doc.name);
     this.ui.sub.textContent = t('{rooms} 个房间 · {n} 个物件', { rooms: this.doc.rooms.filter(r => r.floor).length, n: total });
-    this.ui.lociCount.textContent = String(bound);
-    this.renderLociList();
-  }
-
-  /** 从宿主拉取绑定块的最新标题 */
-  private async refreshTitles() {
-    const doc = this.doc;
-    if (!this.host.getBlock || !doc || this.readonly) return;
-    const loci = boundLoci(doc).filter(l => this.isLocalNote(l.binding, doc));
-    let changed = false;
-    await Promise.all(loci.map(async ({ binding }) => {
-      try {
-        const ref = await this.host.getBlock(binding.blockId);
-        if (!ref) { this.missing.add(binding.blockId); return; }
-        this.missing.delete(binding.blockId);
-        if (ref.title && ref.title !== binding.title) { binding.title = ref.title; changed = true; }
-      } catch { /* 宿主暂时不可用时保留旧标题 */ }
-    }));
-    if (this.disposed || this.doc !== doc) return;
-    if (changed) this.emitChange(false);
-    this.renderLociList();
-    if (this.selected) this.showCard(this.selected);
   }
 
   /** @internal */ emitChange(touch = true) {
@@ -1302,17 +903,8 @@ export class PalaceView {
           <div class="kp-title" data-ref="title"></div>
           <div class="kp-sub" data-ref="sub"></div>
         </div>
-        <button class="kp-loci-btn" data-act="loci" title="${t('已绑定的记忆桩')}">${rich(ICONS.pin)}<span data-ref="lociCount">0</span></button>
-        <button class="kp-loci-btn kp-routes-btn" data-act="routes" data-ref="routesBtn" title="${t('记忆路线 · 沿路线回忆')}">${rich(ICONS.route)}<span>${t('路线')}</span></button>
-        <button class="kp-loci-btn kp-numbers-btn" data-act="numbers" title="${t('数字记忆：把一串数字变成画面，摆在宫殿里')}">${rich(ICONS.hash)}<span>${t('数字')}</span></button>
-        <button class="kp-loci-btn kp-guest-btn kp-hidden" data-act="guestOpen" data-ref="guestBtn" title="${t('留言板：好友来参观时留下的话')}">📮<span>${t('留言')}</span></button>
       </div>
-      <div class="kp-loci kp-glass kp-hidden kp-iso-only kp-palace-only" data-ref="loci"></div>
-      <div class="kp-routes kp-glass kp-hidden kp-iso-only kp-palace-only" data-ref="routes"></div>
-      <div class="kp-routes kp-numbers kp-glass kp-hidden kp-iso-only kp-palace-only" data-ref="numbers"></div>
-      <div class="kp-overlay kp-center kp-hidden kp-palace-only" data-ref="paoWrap"><div class="kp-pao kp-glass" data-ref="pao"></div></div>
       <div class="kp-overlay kp-center kp-hidden kp-palace-only" data-ref="shelfWrap"><div class="kp-shelfed kp-glass" data-ref="shelf"></div></div>
-      <div class="kp-recall kp-glass kp-hidden kp-iso-only kp-palace-only" data-ref="recall"></div>
       <nav class="kp-bar kp-glass kp-iso-only kp-view-only kp-palace-only">
         <button class="kp-icon" data-act="rotl" title="${t('向左旋转 90°（Q）')}">${rich(ICONS.rotl)}</button>
         <button class="kp-icon" data-act="rotr" title="${t('向右旋转 90°（E）')}">${rich(ICONS.rotr)}</button>
@@ -1349,9 +941,8 @@ export class PalaceView {
       <div class="kp-drawer kp-glass kp-hidden kp-palace-only" data-ref="drawer"></div>
       <div class="kp-card kp-glass kp-hidden kp-iso-only kp-palace-only" data-ref="card"></div>
       <div class="kp-crosshair kp-walk-only"></div>
-      <div class="kp-focus kp-glass kp-hidden" data-ref="focus"></div>
       <div class="kp-walk-hud kp-glass kp-walk-only">
-        <span>${rich(t('<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动 · 拖动转视角 · <kbd>F</kbd> 打开笔记 · <kbd>Esc</kbd> 退出'))}</span>
+        <span>${rich(t('<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动 · 拖动转视角 · <kbd>Esc</kbd> 退出'))}</span>
         <button data-act="exitWalk">${t('返回俯视')}</button>
       </div>
       <div class="kp-joy kp-glass kp-walk-only" data-ref="joy"><i></i></div>
@@ -1361,175 +952,25 @@ export class PalaceView {
     r.querySelectorAll<HTMLElement>('[data-ref]').forEach(el => { this.ui[el.dataset.ref] = el; });
   }
 
-  private renderLociList() {
-    const list = this.ui.loci;
-    if (!this.doc) return;
-    const loci = this.sortLoci(boundLoci(this.doc));
-    if (!loci.length) {
-      list.replaceChildren(html`<div class="kp-empty">${rich(t('还没有记忆桩。<br>点选场景里的物件（或书架上的一本书），就能把它和一个笔记块绑定。'))}</div>`);
-      return;
-    }
-    list.replaceChildren();
-    for (const { item, slot, binding } of loci) {
-      const b = document.createElement('button');
-      b.className = 'kp-row';
-      b.dataset.act = 'gotoItem';
-      b.dataset.id = locusKey(item.id, slot);
-      const room = t(this.built?.roomOf(item.room)?.name || '');
-      const missing = this.missing.has(binding.blockId), orphan = this.orphans.has(locusKey(item.id, slot));
-      b.replaceChildren(html`<b></b><span></span>`);
-      b.querySelector('b').textContent = [this.locusName(item, slot), room].filter(Boolean).join(' · ');
-      b.querySelector('span').textContent = missing ? t('⚠︎ 绑定的块已不存在')
-        : orphan ? t('⚠︎ {title}（这个部件已不在了，调回物件尺寸即可恢复）', { title: binding.title || binding.blockId })
-          : (binding.title || binding.blockId);
-      list.appendChild(b);
-    }
-  }
-
-  /** 同一件物件上的部件按显示名排（第 1 层在前），物件之间保持原顺序 */
-  private sortLoci(list: BoundLocus[]) {
-    const label = (l: BoundLocus) => l.slot ? slotLabel(this.catalog, l.item, l.slot) : '';
-    const order = new Map<string, number>();
-    list.forEach((l, i) => { if (!order.has(l.item.id)) order.set(l.item.id, i); });
-    return [...list].sort((a, b) => order.get(a.item.id) - order.get(b.item.id) || label(a).localeCompare(label(b), getLocale() === 'zh-CN' ? 'zh' : 'en', { numeric: true }));
-  }
-
-  /** 记忆桩的显示名：物件名，部件再加上部件名（书架 · 第 2 层 · 第 5 本） @internal */
-  locusName(item: PalaceItem, slot = '') {
-    const name = itemDisplayName(item, this.catalog);
-    return slot ? `${name} · ${slotLabel(this.catalog, item, slot)}` : name;
-  }
-
   /** @internal */ showCard(obj: THREE.Object3D | null) {
     if (this.editor?.active) return this.editor.renderCard(obj);
     const card = this.ui.card;
-    if (!obj || this.recall?.active || this.numbers?.active) { card.classList.add('kp-hidden'); return; }
+    if (!obj) { card.classList.add('kp-hidden'); return; }
     const item = obj.userData.item as PalaceItem;
     const slot = this.selectedSlot;
     const room = t(this.built?.roomOf(item.room)?.name || item.room || '');
-    const b = getBinding(item, slot);
-    const missing = b && this.missing.has(b.blockId);
-    const foreign = b && !this.isLocalNote(b);
-    const canPick = !!this.host.pickBlock && !this.readonly, canOpen = !!this.host.openBlock && !foreign;
-    // 笔记本书架上的书：它本身就是一篇文档
-    const doc = slot && !b ? this.docOfSlot(item, slot) : null;
-    let pinSlot: DocumentFragment;
-    if (b?.blockId) {
-      pinSlot = html`<div class="kp-slot kp-linked${missing ? ' kp-missing' : ''}" data-act="${canOpen ? 'openBinding' : ''}" title="${canOpen ? t('打开笔记块') : ''}">
-        📌 ${b.src === 'public' ? t('公开的记忆桩') : t('已绑定记忆桩')}<b data-ref="bindTitle"></b><small>${missing ? t('⚠︎ 这个块已被删除或移动，请重新绑定') : b.src === 'public' ? t('主人只分享了标题和记忆故事，笔记本身不会分享') : foreign ? t('笔记在{app}里', { app: t(noteSourceName(b.src || this.doc?.src)) }) : (canOpen ? t('点击打开 · 按住 Alt 在右侧分屏打开') : b.blockId)}</small></div>`;
-    } else if (doc) {
-      pinSlot = html`<div class="kp-slot kp-linked kp-docbook" data-act="${canOpen ? 'openBinding' : ''}" title="${canOpen ? t('打开文档') : ''}">
-        📖 ${t('这本书就是笔记')}<b data-ref="bindTitle"></b><small>${canOpen ? t('点击打开 · ') : ''}${t('设为记忆桩后会出现在路线和回忆里')}</small></div>`;
-    } else {
-      pinSlot = html`<div class="kp-slot">📌 ${t('尚未绑定笔记')}<br>${canPick ? (slot ? t('把这个部件和一个笔记块关联起来，漫游到这里时就能回想起它。') : t('把这个物件和一个笔记块关联起来，漫游到这里时就能回想起它。')) : t('当前环境不支持绑定笔记。')}</div>`;
-    }
-    const bindBtns = this.readonly ? null : b?.blockId
-      ? html`${canPick ? html`<button data-act="bind">${t('更换')}</button>` : ''}<button class="kp-danger" data-act="unbind" title="${t('解除绑定')}">${t('解绑')}</button>`
-      : doc ? html`<button class="kp-primary" data-act="bindDoc">${t('设为记忆桩')}</button>`
-        : (canPick ? html`<button class="kp-primary" data-act="bind">${t('绑定笔记块')}</button>` : null);
-    // 整个笔记本书架：书目来源、放不下的本数
-    const shelf = !slot && obj.userData.shelf?.source ? obj.userData.shelf : null;
-    const shelfLine = shelf ? html`<div class="kp-shelf-src">📚 ${item.params.source.name || t('笔记本')} · ${shelf.loading ? t('正在读取书目…') : t('{n} 本', { n: shelf.total })}${shelf.overflow ? html`<br><em>${t('还有 {n} 本放不下：在搭建模式里加宽书架或加层', { n: shelf.overflow })}</em>` : ''}</div>` : null;
-    // 整件物件：列出它上面已绑定的部件；部件：可以回到整件
-    const parts = slot ? [] : this.sortLoci(itemLoci(item).filter(l => l.slot));
-    const partList = parts.length ? html`<div class="kp-subtitle">${t('部件记忆桩')} · ${parts.length}</div><div class="kp-mini">${parts.slice(0, 5).map(l => html`
-      <button data-act="gotoItem" data-id="${locusKey(item.id, l.slot)}"><b>${l.binding.title || l.binding.blockId}</b><span>${slotLabel(this.catalog, item, l.slot)}${this.orphans.has(locusKey(item.id, l.slot)) ? ' · ' + t('⚠︎ 已不在') : ''}</span></button>`)}
-      ${parts.length > 5 ? html`<div class="kp-more-note">${t('还有 {n} 个…', { n: parts.length - 5 })}</div>` : ''}</div>` : null;
     card.replaceChildren(html`
       <button class="kp-close" data-act="closeCard">×</button>
       <div class="kp-room">${room.toUpperCase()}</div>
       <h3></h3>
       ${slot ? html`<div class="kp-part"><span></span><button data-act="selectWhole">${t('选中整个{name}', { name: itemDisplayName(item, this.catalog) })}</button></div>` : ''}
-      ${shelfLine}
       ${this.catalog[item.type] ? '' : html`<div class="kp-shelf-src">📦 ${t('「{type}」需要更新版本的插件才能显示，先用纸箱占位', { type: item.type })}</div>`}
-      ${pinSlot}
-      ${bindBtns ? html`<div class="kp-row">${bindBtns}</div>` : ''}
-      ${this.social?.shareToggle(b)}
-      ${this.numbers.cardSection(item, slot)}
-      ${b?.blockId ? this.stories.section(item, slot, b) : ''}
-      ${partList}
-      ${item.type === 'bookshelf' ? html`<div class="kp-row"><button data-act="shelfEdit" title="${t('书架的正视图：逐本换颜色、靠向一边、抽出、空出一格，也能一本本绑定')}">📚 ${t('书架平面图')}</button></div>` : ''}
+      ${item.type === 'bookshelf' ? html`<div class="kp-row"><button data-act="shelfEdit" title="${t('书架的正视图：逐本换颜色、靠向一边、抽出、空出一格')}">📚 ${t('书架平面图')}</button></div>` : ''}
       <div class="kp-row"><button data-act="focus">${t('聚焦')}</button><button data-act="walkHere">${t('从这里漫游')}</button></div>`);
     card.querySelector('h3').textContent = itemDisplayName(item, this.catalog);
     const part = card.querySelector('.kp-part span');
     if (part) part.textContent = slotLabel(this.catalog, item, slot);
-    const bt = card.querySelector('[data-ref="bindTitle"]');
-    if (bt) bt.textContent = b ? (b.title || b.blockId) : t('《{title}》', { title: doc.title });
-    if (b?.blockId) this.stories.hydrate(card, b);
     card.classList.remove('kp-hidden');
-  }
-
-  /** 笔记本书架上的书：把它对应的文档设为记忆桩 */
-  private bindDocSlot() {
-    const item = this.selected?.userData.item as PalaceItem;
-    if (item) this.bindDocBook(item, this.selectedSlot);
-  }
-
-  private async bindSelected() {
-    const item = this.selected?.userData.item as PalaceItem;
-    if (item) await this.pickAndBind(item, this.selectedSlot);
-  }
-
-  private unbindSelected() {
-    const item = this.selected?.userData.item as PalaceItem;
-    if (item) this.unbindLocus(item, this.selectedSlot);
-  }
-
-  /** 笔记本书架上的书：把它对应的文档设为记忆桩 @internal */
-  bindDocBook(item: PalaceItem, slot: string) {
-    const doc = this.docOfSlot(item, slot);
-    if (!doc) return;
-    setBinding(item, slot, this.stampSource({ blockId: doc.id, title: doc.title, boundAt: Date.now() }));
-    this.emitChange();
-    this.refreshBindings();
-    this.host.notify?.(t('《{title}》已设为记忆桩', { title: doc.title }));
-  }
-
-  /** 让用户挑一个笔记块，绑定到这个记忆桩 @internal */
-  async pickAndBind(item: PalaceItem, slot: string) {
-    if (!this.host.pickBlock) return;
-    const name = this.locusName(item, slot);
-    const ref = await this.host.pickBlock({ current: getBinding(item, slot)?.blockId, itemName: name });
-    if (!ref || this.disposed) return;
-    setBinding(item, slot, this.stampSource({ blockId: ref.id, title: ref.title, boundAt: Date.now() }));
-    this.missing.delete(ref.id);
-    this.emitChange();
-    this.refreshBindings();
-    this.host.notify?.(t('已把「{name}」绑定到「{title}」', { name, title: ref.title }));
-  }
-
-  /** @internal */ unbindLocus(item: PalaceItem, slot: string) {
-    setBinding(item, slot, null);
-    this.emitChange();
-    this.refreshBindings();
-  }
-
-  /**
-   * 物件 / 部件上可打开的笔记：部件自己的绑定；笔记本书架上的书就是那篇文档；否则退回整件的绑定
-   */
-  /** @internal */ bindingAt(obj: THREE.Object3D | null, slot = ''): LocusBinding | null {
-    const item = obj?.userData.item as PalaceItem | undefined;
-    const own = slot && getBinding(item, slot);
-    if (own) return own;
-    const doc = item && slot ? this.docOfSlot(item, slot) : null;
-    if (doc) return { blockId: doc.id, title: doc.title, src: item.params.source.src };
-    return getBinding(item);
-  }
-
-  /** 悬停 / 准星提示里绑定那一段：部件自己的、文档书、或借用整件的 */
-  private linkText(item: PalaceItem, slot: string, lb: LocusBinding) {
-    if (slot && !getBinding(item, slot)) {
-      if (slot.startsWith('doc:')) return `📖 ${lb.title || lb.blockId}`;
-      return `📌 ${t('整个{name}：{title}', { name: itemDisplayName(item, this.catalog), title: lb.title || lb.blockId })}`;
-    }
-    return `📌 ${lb.title || lb.blockId}`;
-  }
-
-  private openBinding(obj: THREE.Object3D | null, side = false, slot = '') {
-    const b = this.bindingAt(obj, slot);
-    if (!b?.blockId || !this.host.openBlock) return;
-    if (!this.isLocalNote(b)) { this.foreignNotice(b); return; }
-    this.host.openBlock(b.blockId, { side });
   }
 
   // =====================================================================
@@ -1560,8 +1001,8 @@ export class PalaceView {
         root.focus({ preventScroll: true });
       }
     }, { capture: true });
-    this.on(root, 'input', (e: Event) => { if (this.social?.onInput(e, false) || this.companion.onInput(e, false)) return; if (this.level === 'town') this.townCtl.onInput(e, false); else if (this.shelfEd.onInput(e, false) || this.numbers.onInput(e, false) || this.recall.onInput(e, false)) return; else if (this.editor.active) this.editor.onInput(e, false); });
-    this.on(root, 'change', (e: Event) => { if (this.social?.onInput(e, true) || this.companion.onInput(e, true)) return; if (this.level === 'town') this.townCtl.onInput(e, true); else if (this.shelfEd.onInput(e, true) || this.numbers.onInput(e, true) || this.recall.onInput(e, true)) return; else if (this.editor.active) this.editor.onInput(e, true); });
+    this.on(root, 'input', (e: Event) => { if (this.companion.onInput(e, false)) return; if (this.level === 'town') this.townCtl.onInput(e, false); else if (this.shelfEd.onInput(e, false)) return; else if (this.editor.active) this.editor.onInput(e, false); });
+    this.on(root, 'change', (e: Event) => { if (this.companion.onInput(e, true)) return; if (this.level === 'town') this.townCtl.onInput(e, true); else if (this.shelfEd.onInput(e, true)) return; else if (this.editor.active) this.editor.onInput(e, true); });
     this.on(cvs, 'pointermove', (e: PointerEvent) => {
       if (this.mode === 'iso') {
         if (this.level === 'town' ? this.townCtl.onPointerMove(e) : this.editor.onPointerMove(e)) return;
@@ -1596,23 +1037,13 @@ export class PalaceView {
       if (this.level === 'town') { this.townCtl.onClick(e); return; }
       if (this.editor.active && this.editor.emode !== 'items') { this.editor.struct.onClick(e); return; }
       if (this.companion.click(e.clientX, e.clientY)) return;
-      if (this.recall.active || this.numbers.active) return;
       const hit = this.pickAt(e.clientX, e.clientY);
-      // 串门时（或有客人在）点地板：自己的小人走过去
-      if (this.social?.room.walkByClick && !this.editor.active && (!hit || ![...this.built.itemObjects.values()].includes(hit.obj))) {
-        const floor = this.pickAt(e.clientX, e.clientY, this.built?.floors || []);
-        if (floor) { this.select(null); this.companion.walkTo(floor.point.x, floor.point.z); return; }
-      }
-      if (this.recall.picking && this.recall.onPick(hit?.obj || null, hit?.slot || '')) return;
       this.select(hit?.obj || null, this.editor.active ? '' : hit?.slot);
-      this.ui.loci.classList.add('kp-hidden');
     });
     this.on(cvs, 'dblclick', (e: MouseEvent) => {
       if (this.mode !== 'iso') return;
       if (this.level === 'town') { this.townCtl.onDblClick(e); return; }
-      if (this.editor.active || this.recall.active || this.numbers.active) return;
-      const hit = this.pickAt(e.clientX, e.clientY);
-      if (hit?.obj && this.bindingAt(hit.obj, hit.slot)) { this.openBinding(hit.obj, e.altKey, hit.slot); return; }
+      if (this.editor.active) return;
       const floor = this.pickAt(e.clientX, e.clientY, this.built?.floors || []);
       if (!floor) return;
       const dir = new THREE.Vector3().subVectors(this.orbit.target, this.isoCam.position).setY(0).normalize();
@@ -1621,7 +1052,7 @@ export class PalaceView {
     this.on(root, 'keydown', (e: KeyboardEvent) => this.onKey(e, true));
     this.on(root, 'keyup', (e: KeyboardEvent) => this.onKey(e, false));
     this.on(root, 'blur', () => this.walk.keys.clear());
-    this.on(document, 'visibilitychange', () => { this.invalidate(); if (!document.hidden) void this.refreshReview(30e3); });
+    this.on(document, 'visibilitychange', () => { this.invalidate(); });
 
     const joy = this.ui.joy, knob = joy.querySelector('i') as HTMLElement;
     const moveJoy = (e: PointerEvent) => {
@@ -1637,15 +1068,10 @@ export class PalaceView {
   }
 
   private onAction(act: string, el: HTMLElement, e: MouseEvent) {
-    if (this.blockedWhenReadonly(act)) { this.host.notify?.(this.visiting ? t('参观时只能看，不能改动别人的宫殿') : t('这是只读的宫殿')); return; }
-    if (this.social?.onAction(act, el)) return;
-    if (this.guide.onAction(act, el)) return;
+    if (this.readonly && READONLY_BLOCK[act] === true) { this.host.notify?.(t('这是只读的宫殿')); return; }
     if (this.companion.onAction(act, el)) return;
     if (this.townCtl.onAction(act, el, e)) return;
-    if (this.level === 'palace' && this.stories.onAction(act)) return;
     if (this.level === 'palace' && this.shelfEd.onAction(act, el)) return;
-    if (this.level === 'palace' && this.numbers.onAction(act, el)) return;
-    if (this.level === 'palace' && this.recall.onAction(act, el)) return;
     if (this.level === 'palace' && this.editor.onAction(act, el)) return;
     switch (act) {
       case 'rotl': return this.rotateBy(-90);
@@ -1658,17 +1084,7 @@ export class PalaceView {
       case 'toTown': return this.exitPalace();
       case 'closeCard': return this.select(null);
       case 'focus': return this.focusSelected();
-      case 'bind': return void this.bindSelected();
-      case 'bindDoc': return this.bindDocSlot();
-      case 'unbind': return this.unbindSelected();
-      case 'openBinding': return this.openBinding(this.selected, e.altKey, this.selectedSlot);
       case 'selectWhole': return this.select(this.selected);
-      case 'loci':
-        this.ui.loci.classList.toggle('kp-hidden');
-        if (!this.ui.loci.classList.contains('kp-hidden') && this.recall.panelOpen) this.recall.togglePanel(false);
-        if (!this.ui.loci.classList.contains('kp-hidden') && this.numbers.panelOpen) this.numbers.togglePanel(false);
-        return;
-      case 'gotoItem': this.ui.loci.classList.add('kp-hidden'); return this.focusItem(el.dataset.id);
       case 'walkHere': {
         if (!this.selected) return;
         const c = ownBox(this.selected).getCenter(new THREE.Vector3());
@@ -1680,12 +1096,10 @@ export class PalaceView {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
-    if (down && this.guide.onKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
-    if (down && this.social?.onKey(e)) { e.preventDefault(); return; }
     if ((e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable]')) return;
-    if (down && (this.townCtl.onGlobalKey(e) || this.numbers.onGlobalKey(e) || this.shelfEd.onGlobalKey(e))) { e.stopPropagation(); e.preventDefault(); return; }
+    if (down && (this.townCtl.onGlobalKey(e) || this.shelfEd.onGlobalKey(e))) { e.stopPropagation(); e.preventDefault(); return; }
     if (down && this.mode === 'iso') {
-      const took = this.level === 'town' ? this.townCtl.onKey(e) : (this.numbers.onKey(e) || this.recall.onKey(e) || this.editor.onKey(e));
+      const took = this.level === 'town' ? this.townCtl.onKey(e) : this.editor.onKey(e);
       if (took) { e.stopPropagation(); e.preventDefault(); return; }
     }
     if (e.metaKey || e.ctrlKey) return;
@@ -1695,7 +1109,6 @@ export class PalaceView {
       if (down) {
         this.walk.keys.add(k);
         if (k === 'escape' && !document.pointerLockElement) this.exitWalk();
-        else if (k === 'f') this.openBinding(this.walk.focus, e.altKey, this.walk.focusSlot);
       } else this.walk.keys.delete(k);
     } else if (down) {
       if (k === 'q') this.rotateBy(-90);
@@ -1706,7 +1119,6 @@ export class PalaceView {
       else if (k === 'b' && this.level === 'palace') this.editor.toggle();
       else if (k === 'escape' && this.level === 'palace') {
         if (this.selected) this.select(null);
-        else if (!this.ui.loci.classList.contains('kp-hidden')) this.ui.loci.classList.add('kp-hidden');
         else this.exitPalace();
       }
       else handled = false;
@@ -1745,33 +1157,27 @@ export class PalaceView {
   private updateHover() {
     if (this.mode !== 'iso' || !this.lastPointer || this.camTween || !this.built) return;
     if (this.editor.active && this.editor.emode !== 'items') { this.lastPointer = null; return; }
-    // 回忆时不显示提示（会泄露答案）
-    if (this.recall.active || this.numbers.active) { this.lastPointer = null; this.ui.tip.classList.remove('kp-on'); this.setCursor(''); return; }
     const e = this.lastPointer; this.lastPointer = null;
     const tip = this.ui.tip;
     if (e.buttons) { tip.classList.remove('kp-on'); return; }
     const hit = this.pickAt(e.clientX, e.clientY);
     const obj = hit?.obj || null, slot = obj && !this.editor.active ? hit.slot : '';
     if (obj !== this.hovered || slot !== this.hoveredSlot) {
-      this.hovered = obj; this.hoveredSlot = slot; this.hoverSince = performance.now(); this.previewShownFor = null;
+      this.hovered = obj; this.hoveredSlot = slot;
       this.applyHighlight();
     }
     if (obj) {
       const item = obj.userData.item as PalaceItem;
       const room = t(this.built.roomOf(item.room)?.name || '');
-      const lb = this.bindingAt(obj, slot);
-      const bound = lb ? html`<span class="kp-bound">${this.linkText(item, slot, lb)}</span>` : null;
-      tip.replaceChildren(html`${this.locusName(item, slot)}<small>${room}</small>${bound}`);
+      const name = itemDisplayName(item, this.catalog);
+      tip.replaceChildren(html`${slot ? `${name} · ${slotLabel(this.catalog, item, slot)}` : name}<small>${room}</small>`);
       this.placeTip(e);
       this.setCursor('pointer');
-      // 悬停在已绑定的物件上一会儿 → 宿主显示笔记预览
-      if (lb && this.host.showBlockPreview) this.lastHoverPos = { x: e.clientX, y: e.clientY };
     } else {
       tip.classList.remove('kp-on');
       this.setCursor('');
     }
   }
-  private lastHoverPos: { x: number; y: number } | null = null;
 
   /** 画布上的鼠标样式（样式表里按 data-kp-cursor 设置） @internal */
   setCursor(c: '' | 'pointer' | 'grab' | 'grabbing') {
@@ -1783,16 +1189,6 @@ export class PalaceView {
     const rr = this.root.getBoundingClientRect();
     tip.style.transform = `translate(${e.clientX - rr.left + 14}px, ${e.clientY - rr.top + 14}px)`;
     tip.classList.add('kp-on');
-  }
-
-  private maybeShowPreview() {
-    const obj = this.hovered;
-    if (!obj || !this.lastHoverPos || this.mode !== 'iso') return;
-    const lb = this.bindingAt(obj, this.hoveredSlot), id = lb?.blockId;
-    if (!id || !this.isLocalNote(lb) || this.previewShownFor === id || performance.now() - this.hoverSince < 700) return;
-    this.previewShownFor = id;
-    this.ui.tip.classList.remove('kp-on');
-    this.host.showBlockPreview?.(id, this.lastHoverPos);
   }
 
   /** @internal */ clearTint() {
@@ -1874,7 +1270,6 @@ export class PalaceView {
 
   /** 选中物件；slot 为部件编号（'' = 整件） @internal */
   select(obj: THREE.Object3D | null, slot = '') {
-    if (obj !== this.selected || slot !== this.selectedSlot) this.stories?.reset();
     this.selected = obj;
     this.selectedSlot = obj ? slot || '' : '';
     this.applyHighlight();
@@ -1882,8 +1277,6 @@ export class PalaceView {
     this.editor?.updateRing();
     this.showCard(obj);
     this.companion?.onSelect(obj);
-    this.social?.onSelect(obj, this.selectedSlot);
-    this.guide?.onSelect(obj);
   }
 
   /** @internal */ updateMarker() {
@@ -2153,7 +1546,6 @@ export class PalaceView {
   }
 
   private enterWalk(x?: number, z?: number, yaw?: number) {
-    this.recall.stop();
     if (this.mode === 'walk' || !this.built) return;
     this.editor.toggle(false);
     if (this.collidersDirty) { this.built.colliders = computeColliders(this.built, this.catalog); this.collidersDirty = false; }
@@ -2162,7 +1554,6 @@ export class PalaceView {
     this.fade(() => {
       if (!this.built) return;
       this.mode = 'walk';
-      this.guide.onWalk();
       [x, z] = this.findFree(x, z);
       this.walk.pos.set(x, EYE_H, z); this.walk.yaw = yaw; this.walk.pitch = -.06;
       this.activeCam = this.fpCam;
@@ -2198,8 +1589,6 @@ export class PalaceView {
     this.orbit.update();
     this.swapComposer(this.isoCam);
     this.root.classList.remove('kp-walking');
-    this.ui.focus.classList.add('kp-hidden');
-    this.walk.focus = null;
     this.walk.keys.clear();
     this.setCursor('');
   }
@@ -2223,12 +1612,9 @@ export class PalaceView {
     const d = this.walk.drag;
     if (!d) return;
     this.walk.drag = null;
-    if (d.moved < 4) {
-      // 轻点：对着准星的物件打开笔记；鼠标点击空白处则尝试锁定指针
-      if (this.bindingAt(this.walk.focus, this.walk.focusSlot)) this.openBinding(this.walk.focus, e.altKey, this.walk.focusSlot);
-      else if (e.pointerType === 'mouse' && !document.pointerLockElement) {
-        try { (this.renderer.domElement.requestPointerLock?.() as any)?.catch?.(() => { }); } catch { /* 嵌入环境可能不允许锁定指针 */ }
-      }
+    // 轻点：鼠标点击时尝试锁定指针，方便用鼠标转视角
+    if (d.moved < 4 && e.pointerType === 'mouse' && !document.pointerLockElement) {
+      try { void this.renderer.domElement.requestPointerLock().catch(() => { /* 嵌入环境可能不允许锁定指针 */ }); } catch { /* 嵌入环境可能不允许锁定指针 */ }
     }
   }
 
@@ -2247,30 +1633,6 @@ export class PalaceView {
     w.bob = moving ? w.bob + dt * speed * 5.5 : w.bob * .9;
     this.fpCam.position.set(w.pos.x, EYE_H + (moving ? Math.sin(w.bob) * .025 : 0), w.pos.z);
     this.fpCam.rotation.set(w.pitch, w.yaw, 0, 'YXZ');
-
-    // 准星对准的物件：显示绑定的笔记标题
-    const now = performance.now();
-    if (now - w.lastRay > 120) {
-      w.lastRay = now;
-      this.fpCam.updateMatrixWorld();
-      this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.fpCam);
-      const hit = this.pickRay(this.built?.pickables || [], 4.5);
-      const obj = hit?.obj || null, slot = hit?.slot || '';
-      if (obj !== w.focus || slot !== w.focusSlot) {
-        w.focus = obj;
-        w.focusSlot = slot;
-        const item = obj?.userData.item as PalaceItem;
-        const focus = this.ui.focus;
-        if (item) {
-          const name = this.locusName(item, slot);
-          const lb = this.bindingAt(obj, slot);
-          focus.replaceChildren(lb
-            ? html`<b>${this.linkText(item, slot, lb)}</b> · ${name} · ${t('按 F 打开')}`
-            : name);
-          focus.classList.remove('kp-hidden');
-        } else focus.classList.add('kp-hidden');
-      }
-    }
   }
 
   // =====================================================================
@@ -2321,7 +1683,7 @@ export class PalaceView {
       else if (this.orbit.update()) this.invalidate();
       this.clampPan();
       if (this.level === 'town') { this.updateRegionFocus(); this.townCtl.update(dt); }
-      else { this.updateHover(); this.maybeShowPreview(); }
+      else this.updateHover();
       this.updatePlanet();
     } else {
       this.updateWalk(dt);
@@ -2329,7 +1691,6 @@ export class PalaceView {
     }
     if (this.town.update(dt)) this.invalidate();
     if (this.companion.update(dt)) this.invalidate(1);
-    if (this.social?.update(dt)) this.invalidate(1);
     this.updateWalls(dt);
     if (this.night !== this.nightTarget) {
       this.night = THREE.MathUtils.clamp(this.night + Math.sign(this.nightTarget - this.night) * dt * 1.4, 0, 1);
@@ -2536,70 +1897,4 @@ export function roundRectShape(w: number, h: number, r: number) {
   return s;
 }
 
-/**
- * 绑定了的部件（书）往外抽出一截，像读到一半做了记号的书。
- * 只动实例矩阵；第一次改动前记下原始矩阵，每次都从原始矩阵重算，解绑后自动归位。
- */
-const PULL = .04;
-function pullSlots(obj: THREE.Object3D, slots: string[]) {
-  const want = new Set(slots);
-  traverseOwn(obj, (o: any) => {
-    // 书脊面片跟着书一起抽出
-    const verts = o.userData.slotVerts as Record<string, number> | undefined;
-    if (verts) {
-      const pos = o.geometry.getAttribute('position') as THREE.BufferAttribute;
-      if (!o.userData.basePos && !Object.keys(verts).some(s => want.has(s))) return;
-      const base: Float32Array = o.userData.basePos ||= (pos.array as Float32Array).slice();
-      (pos.array as Float32Array).set(base);
-      for (const [s, start] of Object.entries(verts)) if (want.has(s)) for (let i = 0; i < 4; i++) pos.setZ(start + i, pos.getZ(start + i) + PULL);
-      pos.needsUpdate = true;
-      o.geometry.computeBoundingBox();
-      o.geometry.computeBoundingSphere();
-      return;
-    }
-    if (!o.isInstancedMesh || !o.userData.slots) return;
-    const list = o.userData.slots as string[];
-    if (!o.userData.baseMatrices && !list.some(s => want.has(s))) return;
-    const arr = o.instanceMatrix.array as Float32Array;
-    const base: Float32Array = o.userData.baseMatrices ||= arr.slice();
-    arr.set(base);
-    list.forEach((s, i) => { if (want.has(s)) arr[i * 16 + 14] += PULL; });
-    o.instanceMatrix.needsUpdate = true;
-    o.computeBoundingBox();
-    o.computeBoundingSphere();
-  });
-}
 
-/** 蜘蛛网贴图：从左上角辐射出的丝线 + 一圈圈横丝 */
-function cobwebMaterial() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const g = c.getContext('2d');
-  g.strokeStyle = 'rgba(255, 255, 255, .85)';
-  g.lineCap = 'round';
-  const spokes = 6, R = 250;
-  const angle = (i: number) => (i / (spokes - 1)) * Math.PI / 2;
-  g.lineWidth = 2.4;
-  for (let i = 0; i < spokes; i++) {
-    g.beginPath(); g.moveTo(2, 2); g.lineTo(2 + Math.cos(angle(i)) * R, 2 + Math.sin(angle(i)) * R); g.stroke();
-  }
-  g.lineWidth = 1.6;
-  for (let r = 34; r < R; r *= 1.42) {
-    g.beginPath();
-    for (let i = 0; i < spokes; i++) {
-      const a = angle(i), rr = r * (1 + ((i * 37) % 7) / 40);
-      const x = 2 + Math.cos(a) * rr, y = 2 + Math.sin(a) * rr;
-      if (!i) g.moveTo(x, y);
-      else {
-        // 横丝微微下垂
-        const pa = angle(i - 1), mx = 2 + Math.cos((a + pa) / 2) * r * .9, my = 2 + Math.sin((a + pa) / 2) * r * .9;
-        g.quadraticCurveTo(mx, my, x, y);
-      }
-    }
-    g.stroke();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const m = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: .9, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
-  return m;
-}

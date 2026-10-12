@@ -1,12 +1,11 @@
 import type { PalaceView } from './view';
-import { getBinding, type PalaceItem } from './schema';
-import { slotLabel, isHexColor, type BookOverride, type ShelfBook, type DocBook } from './catalog';
+import type { PalaceItem } from './schema';
+import { slotLabel, isHexColor, type BookOverride, type ShelfBook } from './catalog';
 import { html } from './dom';
 import { t } from './i18n';
 
 /* =====================================================================
- * 二维书架编辑器：书架的正视图，点一本书单独调整——换颜色、靠向一边、抽出一点、空出这一格，
- * 也可以直接绑定 / 解绑这本书（批量绑定一整架书时比在三维里一本本点方便）。
+ * 二维书架编辑器：书架的正视图，点一本书单独调整——换颜色、靠向一边、抽出一点、空出这一格。
  * 覆盖存在书架的 params.books 里（见 catalog.ts 的 BookOverride）。
  * ===================================================================== */
 
@@ -79,44 +78,31 @@ export class ShelfEditor {
     const pct = (x: number, total: number) => `${(x / total * 100).toFixed(3)}%`;
     const box = (b: ShelfBook, extra: string, cls: string) => html`<button class="kp-b2d ${cls}" data-act="shelfBook" data-slot="${b.slot}" title="${this.label(item, b)}"
       style="left:${pct(b.x - b.w / 2 + L.w / 2, L.w)};bottom:${pct(b.y - b.h / 2, L.h)};width:${pct(b.w, L.w)};height:${pct(b.h, L.h)};${extra}"></button>`;
-    const books = L.books.map(b => {
-      const bound = !!getBinding(item, b.slot);
-      return box(b, `background:${b.c};transform:rotate(${(-b.rz).toFixed(4)}rad)`, `${bound ? 'kp-bound' : ''}${b.slot === this.slot ? ' kp-on' : ''}${b.pz ? ' kp-pulled' : ''}`);
-    });
+    const books = L.books.map(b => box(b, `background:${b.c};transform:rotate(${(-b.rz).toFixed(4)}rad)`, `${b.slot === this.slot ? 'kp-on' : ''}${b.pz ? ' kp-pulled' : ''}`));
     const holes = hidden.map(b => box(b, '', `kp-hole${b.slot === this.slot ? ' kp-on' : ''}`));
     const boards = Array.from({ length: L.rows + 1 }, (_, i) => html`<i class="kp-board" style="bottom:${pct(i ? .07 + i * L.step - .012 : 0, L.h)}"></i>`);
-    const nBound = L.raw.filter(b => getBinding(item, b.slot)).length;
     el.replaceChildren(html`
       <div class="kp-panel-head"><b>${t('书架平面图 · {name}', { name: t(item.name || '书架') })}</b><button class="kp-close" data-act="shelfClose">×</button></div>
-      <div class="kp-shelfed-sub">${t('{n} 本', { n: L.books.length })}${hidden.length ? ` · ${t('{n} 格空着', { n: hidden.length })}` : ''} · 📌 ${t('{n} 本已绑定', { n: nBound })}${Object.keys(over).length ? html` · <button data-act="shelfResetAll">${t('全部恢复默认')}</button>` : ''}</div>
+      <div class="kp-shelfed-sub">${t('{n} 本', { n: L.books.length })}${hidden.length ? ` · ${t('{n} 格空着', { n: hidden.length })}` : ''}${Object.keys(over).length ? html` · <button data-act="shelfResetAll">${t('全部恢复默认')}</button>` : ''}</div>
       <div class="kp-shelf2d-wrap"><div class="kp-shelf2d" style="aspect-ratio:${L.w} / ${L.h}">${boards}${holes}${books}</div></div>
-      <div class="kp-shelfed-book">${this.slot ? this.bookPanel(item, L, over[this.slot] || {}) : html`<div class="kp-empty">${t('点一本书单独调整：颜色、靠向一边、抽出一点、空出这一格；也可以直接把它绑定成记忆桩。')}</div>`}</div>`);
+      <div class="kp-shelfed-book">${this.slot ? this.bookPanel(L, over[this.slot] || {}) : html`<div class="kp-empty">${t('点一本书单独调整：颜色、靠向一边、抽出一点、空出这一格。')}</div>`}</div>`);
     const ttl = el.querySelector('[data-ref="bookTitle"]');
     if (ttl) ttl.textContent = this.label(item, L.raw.find(b => b.slot === this.slot));
-    const bt = el.querySelector('[data-ref="bindTitle"]');
-    const b = this.slot ? getBinding(item, this.slot) : null;
-    if (bt && b) bt.textContent = b.title || b.blockId;
   }
 
   private label(item: PalaceItem, b: ShelfBook | undefined) {
     if (!b) return '';
-    return (b as DocBook).title || slotLabel(this.v.catalog, item, b.slot);
+    return slotLabel(this.v.catalog, item, b.slot);
   }
 
-  private bookPanel(item: PalaceItem, L: Layout, o: BookOverride) {
-    const slot = this.slot, v = this.v;
-    const b = getBinding(item, slot), isDoc = slot.startsWith('doc:');
+  private bookPanel(L: Layout, o: BookOverride) {
+    const slot = this.slot;
     const raw = L.raw.find(x => x.slot === slot);
     if (!raw) return null;
     const color = o.c || raw.c;
     const lean = o.lean || 0;
-    const canPick = !!v.host.pickBlock, canOpen = !!v.host.openBlock;
-    const bindBtns = b
-      ? html`${canOpen ? html`<button data-act="shelfOpen">${t('打开笔记')}</button>` : ''}<button class="kp-danger" data-act="shelfUnbind">${t('解绑')}</button>`
-      : isDoc ? html`<button class="kp-primary" data-act="shelfBind">${t('设为记忆桩')}</button>`
-        : canPick ? html`<button class="kp-primary" data-act="shelfBind">${t('绑定笔记…')}</button>` : null;
     return html`
-      <div class="kp-shelfed-title"><b data-ref="bookTitle"></b>${b ? html`<small>📌 <span data-ref="bindTitle"></span></small>` : ''}</div>
+      <div class="kp-shelfed-title"><b data-ref="bookTitle"></b></div>
       <div class="kp-shelfed-row"><span>${t('颜色')}</span><div class="kp-swatches">${SWATCHES.map(c => html`<button class="kp-sw${c === color ? ' kp-on' : ''}" data-act="shelfColor" data-c="${c}" style="background:${c}"></button>`)}
         <input type="color" data-field="shelfColor" value="${isHexColor(color) ? color : '#888888'}" title="${t('自定义颜色')}"></div></div>
       <div class="kp-shelfed-row"><span>${t('姿态')}</span><div class="kp-seg kp-seg-full">
@@ -125,9 +111,8 @@ export class ShelfEditor {
         <button class="${lean === -1 ? 'kp-on' : ''}" data-act="shelfLean" data-lean="-1">${t('向右靠')}</button></div></div>
       <div class="kp-shelfed-row"><span></span><div class="kp-shelfed-btns">
         <button class="${o.pull ? 'kp-on' : ''}" data-act="shelfPull">${t('抽出一点')}</button>
-        <button class="${o.hide ? 'kp-on' : ''}" data-act="shelfHide"${b && !o.hide ? ` disabled title="${t('已绑定的书不能空出来，先解绑')}"` : ''}>${t('空出这一格')}</button>
-        <button data-act="shelfReset"${Object.keys(o).length ? '' : ' disabled'}>${t('恢复默认')}</button></div></div>
-      ${bindBtns ? html`<div class="kp-row">${bindBtns}</div>` : ''}`;
+        <button class="${o.hide ? 'kp-on' : ''}" data-act="shelfHide">${t('空出这一格')}</button>
+        <button data-act="shelfReset"${Object.keys(o).length ? '' : ' disabled'}>${t('恢复默认')}</button></div></div>`;
   }
 
   onAction(act: string, el: HTMLElement): boolean {
@@ -154,12 +139,6 @@ export class ShelfEditor {
         v.emitChange();
         this.render();
         break;
-      case 'shelfBind':
-        if (!item || !slot) break;
-        if (slot.startsWith('doc:')) { v.bindDocBook(item, slot); this.render(); } else void v.pickAndBind(item, slot).then(() => this.render());
-        break;
-      case 'shelfUnbind': if (item && slot) { v.unbindLocus(item, slot); this.render(); } break;
-      case 'shelfOpen': { const b = item && slot ? getBinding(item, slot) : null; if (b && v.isLocalNote(b)) v.host.openBlock?.(b.blockId, { side: true }); break; }
     }
     return true;
   }

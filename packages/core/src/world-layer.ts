@@ -219,8 +219,7 @@ export class RegionLayer {
   updateTag(docs: Map<string, PalaceDoc>) {
     const el = this.tag.element, r = this.region;
     const palaces = r.palaces.map(p => docs.get(p.palaceId)).filter(Boolean);
-    const loci = palaces.reduce((s, d) => s + palaceStats(d).loci, 0);
-    el.replaceChildren(html`<em></em><span><b></b><small>${t('{n} 座宫殿', { n: palaces.length })} · 📌 ${loci}</small></span>`);
+    el.replaceChildren(html`<em></em><span><b></b><small>${t('{n} 座宫殿', { n: palaces.length })}</small></span>`);
     el.querySelector('em').textContent = this.theme.icon;
     el.querySelector('b').textContent = r.name;
   }
@@ -251,11 +250,6 @@ export class WorldLayer {
   private lightTick = 0;
   /** 岛与岛之间的航线（虚线 + 小帆船） */
   private lanes = new THREE.Group();
-
-  /** 宫殿里待复习的记忆桩数（名牌上的小红点），由视图提供 */
-  dueOf?: (doc: PalaceDoc) => number;
-  /** 旅程面板打开时：这座宫殿是第几段 */
-  journeyOf?: (palaceId: string) => number[];
 
   constructor(readonly K: Kit, readonly catalog: Catalog) {
     this.group.name = 'world';
@@ -496,14 +490,12 @@ export class WorldLayer {
   }
 
   updateTag(s: Shell) {
-    const doc = s.doc, st = palaceStats(doc), due = this.dueOf?.(doc) || 0;
+    const doc = s.doc, st = palaceStats(doc);
     const el = s.tag.element;
     el.style.setProperty('--c', s.placed.roofColor || palaceColor(doc));
-    const order = this.journeyOf?.(doc.id) || [];
-    el.replaceChildren(html`${order.length ? html`<span class="kp-jorder" title="${t('旅程第 {list} 段', { list: order.join(t('、')) })}">${order.join('·')}</span>` : ''}<i></i><b></b><span class="kp-more">📌 ${st.loci}</span>${due ? html`<span class="kp-due" title="${t('待复习')}">${due}</span>` : ''}`);
-    el.classList.toggle('kp-in-journey', order.length > 0);
+    el.replaceChildren(html`<i></i><b></b>`);
     el.querySelector('b').textContent = doc.name;
-    el.title = [doc.name, t('{n} 个房间', { n: st.rooms }), t('{n} 个物件', { n: st.items }), t('{n} 个记忆桩', { n: st.loci }), ...(due ? [t('{n} 个待复习', { n: due })] : [])].join(' · ');
+    el.title = [doc.name, t('{n} 个房间', { n: st.rooms }), t('{n} 个物件', { n: st.items })].join(' · ');
     const rects = indoorRects(doc);
     const bb = bboxOf(rects.length ? rects : [palaceLot(doc)]);
     const [x, z] = rectCenter(bb);

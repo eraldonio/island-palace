@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { rand, rr, pick, seed } from './random';
-import type { DocEntry, DocSource } from './host';
 import { t } from './i18n';
 
 /* =====================================================================
@@ -286,7 +285,7 @@ export function createKit({ maxAniso = 8 }: { maxAniso?: number } = {}) {
   }
 
   function texMonitor() {
-    // 屏幕上是一张知识图谱 —— 致敬笔记软件
+    // 屏幕上是一张知识图谱
     const [c, g] = makeCanvas(640, 380);
     g.fillStyle = '#1f2430'; g.fillRect(0, 0, 640, 380);
     g.fillStyle = '#262c3a'; g.fillRect(0, 0, 150, 380);
@@ -499,13 +498,11 @@ export function createKit({ maxAniso = 8 }: { maxAniso?: number } = {}) {
     geoCache.clear();
   }
 
-  // ---------------- 运行时数据：由视图接上宿主（书架书目、用户照片） ----------------
+  // ---------------- 运行时数据：由视图接上宿主（用户照片、导入的模型） ----------------
   const runtime: {
-    /** 书架书目（已拉取的缓存；还没拉到时返回 null） */
-    shelfDocs?: (src: DocSource) => DocEntry[] | null;
     /** 读取用户照片，返回 <img src> 地址 */
     loadMedia?: (id: string) => Promise<string>;
-    /** 异步资源（照片、模型）加载完成：视图更新图钉、碰撞体并重新渲染 */
+    /** 异步资源（照片、模型）加载完成：视图更新碰撞体并重新渲染 */
     onLoaded?: () => void;
   } = {};
 
@@ -564,7 +561,7 @@ export function createKit({ maxAniso = 8 }: { maxAniso?: number } = {}) {
         };
         img.onerror = () => resolve();
         img.src = url;
-      })).catch(e => console.warn(t('[kmind-palace] 读取照片失败'), id, e));
+      })).catch(e => console.warn(t('[island-palace] 读取照片失败'), id, e));
     }
     return mat;
   }

@@ -42,7 +42,7 @@ export interface PartSpec {
   /** 阵列：一共 count 份，每份在上一份基础上偏移 step */
   repeat?: { count: number; step: [number, number, number] };
   children?: PartSpec[];
-  /** 部件编号：可以单独绑定记忆桩 */
+  /** 部件编号：用来单独引用这个部件 */
   slot?: string;
   name?: string;
 }

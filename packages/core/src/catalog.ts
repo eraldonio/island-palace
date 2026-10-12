@@ -20,8 +20,8 @@ export interface ParamSpec {
   step?: number;
   /** 构建函数里的默认值（编辑面板显示用） */
   def?: any;
-  /** 特殊字段：docSource 书架书目（笔记本 / 文档）· photo 用户照片 · model 导入的 3D 模型 */
-  kind?: 'docSource' | 'photo' | 'model' | 'blocks';
+  /** 特殊字段：photo 用户照片 · model 导入的 3D 模型 · blocks 积木 JSON */
+  kind?: 'photo' | 'model' | 'blocks';
   /** 下拉选项之外还可以自定义颜色（值为 #rrggbb） */
   customColor?: boolean;
 }
@@ -36,7 +36,7 @@ export interface CatalogEntry {
   build(p: Record<string, any>): THREE.Object3D;
   /** 默认是否阻挡漫游（默认 true） */
   solid?: boolean;
-  /** 默认是否可点选 / 绑定（默认 true） */
+  /** 默认是否可点选（默认 true） */
   pickable?: boolean;
   /** 碰撞只取子节点中标记了 collider 的部分（例如玻璃栏杆） */
   childColliders?: boolean;
@@ -47,7 +47,7 @@ export interface CatalogEntry {
   /** 编辑面板可调参数 */
   params?: ParamSpec[];
   /**
-   * 部件（可以单独绑定记忆桩的一部分，例如书架上的一本书）的显示名。
+   * 部件（例如书架上的一本书）的显示名。
    * 部件编号由构建函数登记：普通网格用 userData.slot，InstancedMesh 用 userData.slots[instanceId]。
    */
   slotName?(slot: string, params: Record<string, any>): string;
@@ -216,7 +216,7 @@ export interface ShelfBook {
   pz?: number;
 }
 
-/** 单本书的外观覆盖（存在书架的 params.books 里，按部件编号；笔记本书架上是 doc:<文档 id>） */
+/** 单本书的外观覆盖（存在书架的 params.books 里，按部件编号） */
 export interface BookOverride {
   /** 颜色 #rrggbb */
   c?: string;
@@ -256,7 +256,7 @@ export interface ShelfDecor { kind: 'vase' | 'plant' | 'box'; x: number; y: numb
 
 /**
  * 书架上每层放哪些书、摆件。每层单独取随机种子：
- * 改宽度只会在行尾增减书、改高度不换书、加减层数只影响顶层——已绑定的书尽量留在原位。
+ * 改宽度只会在行尾增减书、改高度不换书、加减层数只影响顶层——逐本调整过的书尽量留在原位。
  */
 export function shelfLayout({ w = 1.2, h = 2.0, d = .34, rows = 5, decor = true }: any, seed: number) {
   const books: ShelfBook[] = [], decos: ShelfDecor[] = [];
@@ -289,80 +289,6 @@ export function shelfLayout({ w = 1.2, h = 2.0, d = .34, rows = 5, decor = true 
     } else place(x0, x1);
   }
   return { books, decor: decos, step };
-}
-
-// ---------------- 书架 = 笔记本（纯数据） ----------------
-/** 书脊颜色：偏深的上浅色字，少数浅色的上深色字 */
-const SPINE_COLORS = ['#7d3a2f', '#3f5a6b', '#5b4a6b', '#445c4a', '#2f3a4a', '#8a5a3c', '#6b7f5a', '#9a7b4f', '#35524a', '#6d3f55', '#4a4f6b', '#e3d7c3', '#d9cfc0', '#c9a15a'];
-
-/** 书目来源的键 */
-export const sourceKey = (s: { box: string; path: string }) => s.box + ':' + s.path;
-
-function hashStr(s: string) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
-}
-const frac = (h: number, k: number) => ((Math.imul(h ^ Math.imul(k, 0x9e3779b1), 2654435761) >>> 0) % 10007) / 10007;
-
-export interface DocBook extends ShelfBook { id: string; title: string }
-
-/**
- * 书架上摆一个笔记本（或一篇文档的子文档）：从最上层开始、从左往右，按文档树里的顺序，
- * 均匀分到各层（每层 ⌈总数 / 层数⌉ 本，一层放不下就接着放下一层）。
- * 每本书的尺寸和颜色由文档 id 决定（改名、调整顺序都不变）。放不下的本数记在 overflow。
- */
-export function docShelfLayout({ w = 1.2, h = 2.0, d = .34, rows = 5 }: any, docs: { id: string; title: string }[]) {
-  const step = (h - .1) / rows, x0 = -w / 2 + .04, x1 = w / 2 - .04;
-  const perRow = Math.max(1, Math.ceil(docs.length / rows));
-  const books: DocBook[] = [];
-  /** 每层书的末尾（放书挡） */
-  const ends: { x: number; y: number }[] = [];
-  let k = 0;
-  for (let row = rows - 1; row >= 0 && k < docs.length; row--) {
-    const y = .07 + row * step + .013;
-    let x = x0;
-    // 前面几层没放满时，后面的层多放一些
-    const quota = perRow + Math.max(0, (rows - 1 - row) * perRow - k);
-    for (let n = 0; n < quota && k < docs.length; n++) {
-      const doc = docs[k], hs = hashStr(doc.id);
-      const bw = .026 + frac(hs, 1) * .016, bh = Math.min(step - .05, .19 + frac(hs, 2) * .07), bd = Math.min(.17 + frac(hs, 3) * .06, d - .04);
-      if (x + bw > x1) break;
-      books.push({ slot: 'doc:' + doc.id, row, x: x + bw / 2, y: y + bh / 2, w: bw, h: bh, d: bd, rz: 0, c: SPINE_COLORS[hs % SPINE_COLORS.length], id: doc.id, title: doc.title });
-      x += bw + .003;
-      k++;
-    }
-    if (x1 - x > .06) ends.push({ x: x + .008, y });
-  }
-  return { books, overflow: docs.length - k, step, ends };
-}
-
-/** 在书脊贴图的一格里竖着写书名：汉字直排，英文数字横躺（和中文竖排书一样） */
-function drawSpine(g: CanvasRenderingContext2D, x: number, y: number, W: number, H: number, bg: string, title: string) {
-  g.fillStyle = bg;
-  g.fillRect(x, y, W, H);
-  const c = new THREE.Color(bg), lum = .2126 * c.r + .7152 * c.g + .0722 * c.b;
-  const dark = lum < .5;
-  g.fillStyle = dark ? 'rgba(255, 255, 255, .16)' : 'rgba(0, 0, 0, .12)';
-  g.fillRect(x, y + 14, W, 3);
-  g.fillRect(x, y + H - 17, W, 3);
-  g.fillStyle = dark ? 'rgba(255, 248, 235, .93)' : 'rgba(40, 32, 26, .88)';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  const fs = 22;
-  g.font = `600 ${fs}px "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif`;
-  let cy = y + 28;
-  const maxY = y + H - 24;
-  for (const ch of title) {
-    if (ch === ' ') { cy += fs * .4; continue; }
-    const ascii = /[\x21-\x7e]/.test(ch);
-    const adv = ascii ? g.measureText(ch).width + 1 : fs + 1;
-    if (cy + adv > maxY) { g.fillText('⋮', x + W / 2, Math.min(cy + fs / 2, maxY - fs / 2)); break; }
-    if (ascii) {
-      g.save(); g.translate(x + W / 2, cy + adv / 2); g.rotate(Math.PI / 2); g.fillText(ch, 0, 0); g.restore();
-    } else g.fillText(ch, x + W / 2, cy + fs / 2);
-    cy += adv;
-  }
 }
 
 export function createCatalog(K: Kit, wallH = 2.8) {
@@ -816,7 +742,7 @@ export function createCatalog(K: Kit, wallH = 2.8) {
   }
 
   // ---------------- 书 / 柜 ----------------
-  // ---------------- 摆件（可以放在家具上、单独绑定记忆桩） ----------------
+  // ---------------- 摆件（可以放在家具上） ----------------
   function bookStack({ colors = ['navy', 'cream'], w = .23, d = .17 }: any = {}) {
     const g = new THREE.Group();
     let y = 0;
@@ -976,53 +902,12 @@ export function createCatalog(K: Kit, wallH = 2.8) {
         g.remove(ph);
         g.add(inst);
         K.runtime.onLoaded?.();
-      }).catch((e) => console.warn(t('[kmind-palace] 模型加载失败'), src, e));
+      }).catch((e) => console.warn(t('[island-palace] 模型加载失败'), src, e));
     }
     return g;
   }
 
-  /** 书脊：一张贴图集 + 每本书正面一块面片（普通书架没有书名，笔记本书架写上文档标题） */
-  function spineMesh(books: DocBook[], d: number) {
-    const CW = 40, CH = 272, cols = Math.max(1, Math.min(books.length, 48)), rowsA = Math.ceil(books.length / cols);
-    const canvas = document.createElement('canvas');
-    canvas.width = cols * CW; canvas.height = rowsA * CH;
-    const g2 = canvas.getContext('2d');
-    const pos: number[] = [], uv: number[] = [], nor: number[] = [], col: number[] = [], idx: number[] = [];
-    books.forEach((b, i) => {
-      const cx = (i % cols) * CW, cy = Math.floor(i / cols) * CH;
-      drawSpine(g2, cx, cy, CW, CH, b.c, b.title);
-      const z = -d / 2 + .02 + b.d + .0008 + (b.pz || 0);
-      // 靠着的书：书脊面片跟着书转
-      const cs = Math.cos(b.rz), sn = Math.sin(b.rz);
-      const corner = (dx: number, dy: number) => pos.push(b.x + dx * cs - dy * sn, b.y + dx * sn + dy * cs, z);
-      const v = pos.length / 3;
-      corner(-b.w / 2, -b.h / 2); corner(b.w / 2, -b.h / 2); corner(b.w / 2, b.h / 2); corner(-b.w / 2, b.h / 2);
-      const u0 = cx / canvas.width, u1 = (cx + CW) / canvas.width, v1 = 1 - cy / canvas.height, v0 = 1 - (cy + CH) / canvas.height;
-      uv.push(u0, v0, u1, v0, u1, v1, u0, v1);
-      for (let k = 0; k < 4; k++) { nor.push(0, 0, 1); col.push(1, 1, 1); }
-      idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
-    });
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    geo.setIndex(idx);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: .8, vertexColors: true });
-    mat.userData.owned = true;
-    const m = new THREE.Mesh(geo, mat);
-    m.receiveShadow = true;
-    m.name = 'kp-spines';
-    // 拾取：每本书两个三角形；高亮 / 抽出：每本书四个顶点
-    m.userData.faceSlots = books.flatMap(b => [b.slot, b.slot]);
-    m.userData.slotVerts = Object.fromEntries(books.map((b, i) => [b.slot, i * 4]));
-    return m;
-  }
-
-  function bookshelf({ w = 1.2, h = 2.0, d = .34, rows = 5, wood = 'oak', decor = true, source = null, books = null }: any = {}) {
+  function bookshelf({ w = 1.2, h = 2.0, d = .34, rows = 5, wood = 'oak', decor = true, books = null }: any = {}) {
     const mat = fabric(wood, M.oak);
     const g = new THREE.Group();
     box(g, .03, h, d, mat, -w / 2 + .015, 0, 0, .004);
@@ -1030,15 +915,11 @@ export function createCatalog(K: Kit, wallH = 2.8) {
     box(g, w, .03, d, mat, 0, h - .03, 0, .004);
     box(g, w, .07, d, mat, 0, 0, 0, .004);
     box(g, w - .06, h - .1, .01, M.cream, 0, .07, -d / 2 + .005, 0);
-    // 书目：笔记本里的文档（还没拉到书目时先空着），或随机的书
-    const docs = source ? K.runtime.shelfDocs?.(source) : null;
-    const L: { books: ShelfBook[]; step: number; decor?: ShelfDecor[]; overflow?: number; ends?: { x: number; y: number }[] } = source
-      ? docShelfLayout({ w, h, d, rows }, docs || [])
-      : shelfLayout({ w, h, d, rows, decor }, Math.floor(rand() * 1e9));
+    const L = shelfLayout({ w, h, d, rows, decor }, Math.floor(rand() * 1e9));
     // 逐本覆盖（颜色、靠、抽出、空着）；二维书架编辑器按这里排好的书画（raw 是覆盖之前的，画空着的格子）
     const raw = L.books;
     L.books = applyBookOverrides(L.books, books);
-    g.userData.shelf = { source: !!source, loading: !!source && !docs, total: docs?.length ?? 0, overflow: L.overflow ?? 0, layout: { w, h, d, rows, step: L.step, books: L.books, raw } };
+    g.userData.shelf = { layout: { w, h, d, rows, step: L.step, books: L.books, raw } };
     for (let i = 1; i < rows; i++) box(g, w - .06, .025, d - .02, mat, 0, .07 + i * L.step - .012, .01, .003);
     for (const o of L.decor || []) {
       if (o.kind === 'vase') lathe(g, [[0, 0], [.04, 0], [.06, .07], [.03, .15], [.035, .18], [0, .18]], [M.ceramic, M.terracotta, M.sage][Math.floor(o.pick * 3)], o.x, o.y, 0);
@@ -1056,12 +937,6 @@ export function createCatalog(K: Kit, wallH = 2.8) {
     inst.castShadow = true; inst.receiveShadow = true;
     inst.userData.slots = L.books.map(b => b.slot);
     g.add(inst);
-    if (source && L.books.length) g.add(spineMesh(L.books as DocBook[], d));
-    // 书挡：一块竖板 + 压在书下的底板
-    for (const e of L.ends || []) {
-      box(g, .006, .15, .11, M.black, e.x, e.y, -d / 2 + .09, .002);
-      box(g, .07, .004, .11, M.black, e.x + .035, e.y, -d / 2 + .09, .001);
-    }
     return g;
   }
 
@@ -1369,16 +1244,6 @@ export function createCatalog(K: Kit, wallH = 2.8) {
 
   const E = (name: string, category: string, build: (p: any) => THREE.Object3D, extra: Partial<CatalogEntry> = {}): CatalogEntry => ({ name, category, build, ...extra });
   const CUP_COLORS: [string, string][] = [['ceramic', '白瓷'], ['terracotta', '陶土红'], ['sage', '鼠尾草绿'], ['navy', '藏青'], ['mustard', '芥末黄']];
-  /** 书的部件名：笔记本书架是文档标题，普通书架是第几层第几本 */
-  const bookSlotLabel = (slot: string, p: Record<string, any>) => {
-    if (slot.startsWith('doc:')) {
-      const id = slot.slice(4);
-      const doc = p.source ? K.runtime.shelfDocs?.(p.source)?.find(x => x.id === id) : null;
-      return doc ? t('《{title}》', { title: doc.title }) : t('一本书');
-    }
-    return bookSlotName(slot, p);
-  };
-
   const catalog: Record<string, CatalogEntry> = {
     sofa: E('沙发', '坐具', sofa, { params: [num('w', '宽度', 1.4, 3.2, .1, 2.3), selc('fabric', '布料', FABRICS, 'sand')] }),
     armchair: E('单人椅', '坐具', armchair, { params: [selc('fabric', '布料', FABRICS, 'mustard'), selc('wood', '木色', WOODS, 'oak')] }),
@@ -1411,7 +1276,7 @@ export function createCatalog(K: Kit, wallH = 2.8) {
     rectMirror: E('镜子', '装饰', rectMirror, { solid: false, mount: 'wall', params: [num('w', '宽', .3, 1.4, .02, .56), num('h', '高', .4, 1.6, .02, .76)] }),
     slatPanel: E('木格栅墙', '装饰', slatPanel, { solid: false, mount: 'wall', fixedY: true, params: [num('w', '宽度', .6, 5, .1, 2.6)] }),
     cat: E('猫', '装饰', cat, { solid: false }),
-    bookshelf: E('书架', '柜架', bookshelf, { slotName: bookSlotLabel, params: [{ key: 'source', label: '书目', kind: 'docSource' }, num('w', '宽度', .6, 2.4, .1, 1.2), num('h', '高度', .8, 2.4, .02, 2.0), num('rows', '层数', 2, 7, 1, 5), selc('wood', '木色', WOODS, 'oak')] }),
+    bookshelf: E('书架', '柜架', bookshelf, { slotName: bookSlotName, params: [num('w', '宽度', .6, 2.4, .1, 1.2), num('h', '高度', .8, 2.4, .02, 2.0), num('rows', '层数', 2, 7, 1, 5), selc('wood', '木色', WOODS, 'oak')] }),
     bookStack: E('一摞书', '摆件', bookStack, { solid: false }),
     tray: E('托盘', '摆件', tray, { solid: false, params: [sel('finish', '材质', [['brass', '黄铜'], ['black', '黑']], 'brass')] }),
     cup: E('杯子', '摆件', cup, { solid: false, params: [selc('color', '颜色', CUP_COLORS, 'ceramic')] }),

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { cleanLook, seededLook, SPECIES } from '../src/look';
 import { createWorld, normalizeWorld } from '../src/world';
-import { toPublicWorld } from '../src/publish';
 
 describe('小管家外观', () => {
   it('规范化：不认识的物种换成猫头鹰，坏颜色用物种默认色，配饰去重、最多 4 件', () => {
@@ -19,12 +18,12 @@ describe('小管家外观', () => {
     expect(kinds.size).toBeGreaterThan(2);
   });
 
-  it('世界数据里的 pet 会被规范化；发布的世界不带 pet', () => {
+  it('世界数据里的 pet 会被规范化', () => {
     const w = createWorld();
-    (w as any).pet = { name: '  团团  ', look: { species: 'cat', accessories: ['nope'] }, hidden: 1 };
-    const n = normalizeWorld(JSON.parse(JSON.stringify(w)));
+    // 原始数据（未经校验）：坏名字、坏外观、非布尔的 hidden
+    const raw = { ...w, pet: { name: '  团团  ', look: { species: 'cat', accessories: ['nope'] }, hidden: 1 } };
+    const n = normalizeWorld(JSON.parse(JSON.stringify(raw)));
     expect(n.pet).toEqual({ name: '团团', look: cleanLook({ species: 'cat' }), hidden: true });
     expect(normalizeWorld({ ...w, pet: 'bad' }).pet).toBeUndefined();
-    expect((toPublicWorld(n, []) as any).pet).toBeUndefined();
   });
 });

@@ -1,15 +1,8 @@
 node_modules/
 dist/
-release/
 .snapshots/
-packages/siyuan-plugin/dev/
-packages/siyuan-plugin/package.zip
-packages/obsidian-plugin/dev/
 .DS_Store
 *.log
 .claude/
 .env
 .vitest/
-# npm run build 的产物（Obsidian 的构建复现用）
-/main.js
-/styles.css

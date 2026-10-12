@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { PalaceView } from './view';
 import type { PalaceItem } from './schema';
-import { uid, getBinding, itemLoci, subtree, itemPose, setItemPose } from './schema';
+import { uid, subtree, itemPose, setItemPose } from './schema';
 import { materializeDecor } from './decor';
 import { pickImageFile, pickFile, compressImage, blobToDataUrl, storeMedia } from './media';
 import { recognizeMessages, parseRecognition } from './recognize';
@@ -131,14 +131,12 @@ export class Editor {
     if (on === this.active) return;
     if (on && this.v.readonly) return;
     this.active = on;
-    if (on) { this.v.recall.stop(); if (this.v.recall.panelOpen) this.v.recall.togglePanel(false); }
     this.cancelPlacing();
     this.struct.clear();
     this.v.root.classList.toggle('kp-editing', on);
     this.v.root.classList.toggle('kp-emode-' + this.emode, on);
     if (on) {
       this.ensureGrid();
-      this.v.ui.loci.classList.add('kp-hidden');
     } else {
       this.setDrawer(false);
     }
@@ -293,7 +291,7 @@ export class Editor {
     return best;
   }
 
-  /** 复制选中的物件，连同放在它上面的东西；副本不带绑定 */
+  /** 复制选中的物件，连同放在它上面的东西 */
   duplicateSelected() {
     const item = this.selectedItem();
     if (!item) return;
@@ -304,7 +302,6 @@ export class Editor {
       const c: PalaceItem = JSON.parse(JSON.stringify(it));
       c.id = ids.get(it.id);
       if (c.parent && ids.has(c.parent)) c.parent = ids.get(c.parent);
-      delete c.bindings;
       return c;
     });
     const copy = copies[0];
@@ -366,14 +363,11 @@ export class Editor {
       return;
     }
     cancelAnimationFrame(this.liveRaf); this.liveRaf = 0;
-    const lostBefore = this.v.orphans.size;
     rebuild();
     const before = this.pendingParam;
     this.pendingParam = null;
     this.commit(before);
     this.renderCard(this.v.selected);
-    const lost = this.v.orphans.size - lostBefore;
-    if (lost > 0) this.v.host.notify?.(t('有 {n} 个绑定的部件放不下了（绑定还在），调回尺寸即可恢复', { n: lost }));
   }
 
   /** 一次改几个参数（照片连同画框比例），记一步撤销 */
@@ -389,15 +383,6 @@ export class Editor {
     this.renderCard(this.v.selected);
   }
 
-  /** 书架书目：选一个笔记本或文档（它的子文档摆上书架） */
-  private async pickSource() {
-    const item = this.selectedItem(), host = this.v.host;
-    if (!item || !host.pickDocSource) return;
-    const src = await host.pickDocSource({ current: item.params?.source });
-    if (!src || this.selectedItem() !== item) return;
-    this.setParams({ source: this.v.stampSource({ ...src }) });
-  }
-
   private setBusy(text: string) {
     this.busy = text;
     if (!this.v.ui.drawer.classList.contains('kp-hidden')) this.renderDrawer();
@@ -406,7 +391,7 @@ export class Editor {
   /** 拍照识物：视觉模型看照片，给出目录类型 + 参数（或积木），然后进入放置 */
   private async recognizePhoto() {
     const ai = this.v.host.ai;
-    if (!ai || this.busy) return;
+    if (!ai?.visionEnabled?.() || this.busy) return;
     const file = await pickImageFile();
     if (!file) return;
     this.setBusy(t('正在识别照片…'));
@@ -486,7 +471,6 @@ export class Editor {
   private afterTransform() {
     this.v.updateMarker();
     this.updateRing();
-    this.v.rebuildPins();
     this.v.invalidate();
   }
 
@@ -851,8 +835,6 @@ export class Editor {
       case 'rotItem': this.rotateSelected(Number(el.dataset.deg)); return true;
       case 'dupItem': this.duplicateSelected(); return true;
       case 'delItem': this.deleteSelected(); return true;
-      case 'pickSource': void this.pickSource(); return true;
-      case 'clearSource': this.setParams({ source: null }); return true;
       case 'pickPhoto': void this.pickPhoto(); return true;
       case 'recognize': void this.recognizePhoto(); return true;
       case 'importModel': void this.importModel(); return true;
@@ -902,24 +884,21 @@ export class Editor {
     const entry = this.v.catalog[item.type];
     const room = t(this.v.built?.roomOf(item.room)?.name || '');
     const wall = entry?.mount === 'wall';
-    const host = this.v.host;
     if (this.editingBlocks && item.type === 'blocks') {
       card.replaceChildren(html`
         <button class="kp-close" data-act="closeCard">×</button>
         <div class="kp-room">${t('积木')} · ${itemDisplayName(item, this.v.catalog)}</div>
-        <div class="kp-blocks-help">${t('形体：box / cyl / cone / sphere / torus / lathe / extrude / group；单位米，pos 是中心，rot 为度；mirror、repeat 复制；slot + name 的部件可以单独绑定。')}</div>
+        <div class="kp-blocks-help">${t('形体：box / cyl / cone / sphere / torus / lathe / extrude / group；单位米，pos 是中心，rot 为度；mirror、repeat 复制；slot + name 的部件会单独记名。')}</div>
         <textarea class="kp-blocks-json" data-field="blocks" spellcheck="false"></textarea>
-        <div class="kp-story-tools"><button data-act="blocksCancel">${t('取消')}</button><button class="kp-primary" data-act="blocksSave">${t('保存')}</button></div>`);
+        <div class="kp-row"><button data-act="blocksCancel">${t('取消')}</button><button class="kp-primary" data-act="blocksSave">${t('保存')}</button></div>`);
       (card.querySelector('textarea') as HTMLTextAreaElement).value = JSON.stringify(item.params?.parts || [], null, 1);
       card.classList.remove('kp-hidden');
       return;
     }
     this.editingBlocks = false;
     const params = (entry?.params || [])
-      .filter(spec => spec.kind === 'docSource' ? !!host.pickDocSource : spec.kind === 'photo' || spec.kind === 'model' ? !!host.saveMedia : true)
+      .filter(spec => spec.kind === 'photo' || spec.kind === 'model' ? !!this.v.host.saveMedia : true)
       .map(spec => paramField(spec, item.params?.[spec.key] ?? spec.def));
-    const b = getBinding(item);
-    const parts = itemLoci(item).filter(l => l.slot).length;
     card.replaceChildren(html`
       <button class="kp-close" data-act="closeCard">×</button>
       <div class="kp-room">${[room, entry ? t(entry.name) : ''].filter(Boolean).join(' · ').toUpperCase()}</div>
@@ -932,15 +911,8 @@ export class Editor {
         <button data-act="dupItem" title="${t('复制（⌘D / Ctrl+D）')}">${t('复制')}</button>
         <button class="kp-danger" data-act="delItem" title="${t('删除（Delete）')}">${t('删除')}</button>
       </div>
-      ${params.length ? html`<div class="kp-params">${params}</div>` : ''}
-      <div class="kp-bindline">
-        <span>${b?.blockId ? html`📌 <b></b>` : html`<i>${t('未绑定笔记')}</i>`}${parts ? ` · ${t('另有 {n} 个部件记忆桩', { n: parts })}` : ''}</span>
-        ${this.v.host.pickBlock ? html`<button data-act="bind">${b?.blockId ? t('更换') : t('绑定')}</button>` : ''}
-        ${b?.blockId ? html`<button class="kp-danger" data-act="unbind">${t('解绑')}</button>` : ''}
-      </div>`);
+      ${params.length ? html`<div class="kp-params">${params}</div>` : ''}`);
     (card.querySelector('.kp-name') as HTMLInputElement).value = item.name ? t(item.name) : '';
-    const bt = card.querySelector('.kp-bindline b');
-    if (bt) bt.textContent = b.title || b.blockId;
     card.classList.remove('kp-hidden');
   }
 
@@ -975,11 +947,6 @@ export class Editor {
 }
 
 function paramField(spec: ParamSpec, value: any) {
-  if (spec.kind === 'docSource') {
-    return html`<div class="kp-field kp-field-src"><span>${t(spec.label)}</span><div class="kp-src"><b>${value ? '📚 ' + (value.name || t('笔记本')) : t('随机的书')}</b>
-      <button data-act="pickSource">${value ? t('更换') : t('摆上笔记本…')}</button>${value ? html`<button data-act="clearSource" title="${t('换回随机的书')}">${t('随机')}</button>` : ''}</div></div>
-      <div class="kp-field kp-field-src"><span>${t('单本')}</span><div class="kp-src"><b>${t('颜色、靠、抽出、空格')}</b><button data-act="shelfEdit">${t('逐本调整…')}</button></div></div>`;
-  }
   if (spec.kind === 'blocks') {
     const n = countParts(sanitizeParts(value).parts);
     return html`<div class="kp-field kp-field-src"><span>${t(spec.label)}</span><div class="kp-src"><b>🧱 ${t('{n} 个形体', { n })}</b><button data-act="editBlocks">${t('编辑 JSON')}</button></div></div>`;

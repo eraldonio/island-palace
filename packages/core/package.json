@@ -1,5 +1,5 @@
 {
-  "name": "@kmind-palace/core",
+  "name": "@island-palace/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,12 +7,12 @@
   "types": "src/index.ts",
   "scripts": {
     "dev": "vite --port 5181",
+    "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "i18n": "tsx test/i18n-report.ts"
   },
   "dependencies": {
-    "@kmind-palace/protocol": "workspace:*",
     "three": "0.186.1"
   },
   "devDependencies": {

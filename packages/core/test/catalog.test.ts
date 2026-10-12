@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shelfLayout, docShelfLayout, applyBookOverrides, LEAN } from '../src/catalog';
+import { shelfLayout, applyBookOverrides, LEAN } from '../src/catalog';
 
 const bySlot = (L: ReturnType<typeof shelfLayout>) => new Map(L.books.map(b => [b.slot, b]));
 
@@ -29,30 +29,6 @@ describe('书架布局', () => {
       expect(o, b.slot).toBeTruthy();
       expect([o.c, o.w]).toEqual([b.c, b.w]);
     }
-  });
-});
-
-describe('书架 = 笔记本', () => {
-  const docs = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `2026093012000${i}-doc${i}`, title: `文档 ${i}` }));
-
-  it('按文档树顺序从最上层往下，均匀分到各层', () => {
-    const L = docShelfLayout({ rows: 5 }, docs(23));
-    expect(L.overflow).toBe(0);
-    expect(L.books.map(b => b.slot)).toEqual(docs(23).map(d => 'doc:' + d.id));
-    const perRow = [4, 3, 2, 1, 0].map(r => L.books.filter(b => b.row === r).length);
-    expect(perRow).toEqual([5, 5, 5, 5, 3]);
-  });
-
-  it('尺寸和颜色由文档 id 决定，不随顺序变化', () => {
-    const a = docShelfLayout({}, docs(6)), b = docShelfLayout({}, [...docs(6)].reverse());
-    const byId = new Map(b.books.map(x => [x.id, x]));
-    for (const x of a.books) expect([x.w, x.h, x.c]).toEqual([byId.get(x.id).w, byId.get(x.id).h, byId.get(x.id).c]);
-  });
-
-  it('放不下的计入 overflow', () => {
-    const L = docShelfLayout({ w: .6, rows: 2 }, docs(80));
-    expect(L.overflow).toBeGreaterThan(0);
-    expect(L.books.length + L.overflow).toBe(80);
   });
 });
 

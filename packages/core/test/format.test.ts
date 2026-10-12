@@ -1,17 +1,44 @@
 import { describe, it, expect } from 'vitest';
 import {
-  PALACE_FORMAT, PALACE_VERSION, PALACE_COMPAT, MEDIA_PARAMS, normalizePalace, palaceMedia, gid, locusKey,
+  PALACE_FORMAT, PALACE_VERSION, PALACE_COMPAT, MEDIA_PARAMS, normalizePalace, palaceMedia, gid,
   type PalaceDoc,
 } from '../src/schema';
-import { WORLD_FORMAT, WORLD_VERSION, normalizeWorld, createWorld, type PalaceWorld } from '../src/world';
+import { WORLD_FORMAT, WORLD_VERSION, normalizeWorld, createWorld } from '../src/world';
 import { sha256Hex, sha256Js, mediaIdOf, MEDIA_ID } from '../src/hash';
-import { toPublicPalace, toPublicWorld, publicMedia, PUBLIC_SRC } from '../src/publish';
-// @ts-expect-error Vite 的 ?raw 导入（读源码文本）
+// Vite 的 ?raw 导入（读源码文本）
 import catalogSource from '../src/catalog.ts?raw';
 
 const BLOCK = '20260101000000-aaaaaaa';
 
-function v3Doc(): any {
+/** 上游插件保存的数据里的一条物件 */
+interface RawItem {
+  id: string;
+  type: string;
+  pos: number[];
+  params?: Record<string, string>;
+  /** 6 版以前的绑定的笔记块 */
+  bindings?: Record<string, { blockId: string; title?: string }>;
+  /** 规范化时原样保留的不认识字段 */
+  glow?: boolean;
+}
+
+/** 一份 v3 数据（与上游插件保存的格式一致） */
+interface RawDoc {
+  format: string;
+  version: number;
+  compat?: number;
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  src?: string;
+  weather?: string;
+  rooms: unknown[];
+  walls: unknown[];
+  items: RawItem[];
+}
+
+function v3Doc(): RawDoc {
   return {
     format: PALACE_FORMAT, version: 3, id: 'palace-a', name: '宫殿', createdAt: 1, updatedAt: 2,
     rooms: [{ id: 'r1', name: '客厅', rect: [0, 0, 5, 4], floor: 'oak' }], walls: [],
@@ -20,20 +47,21 @@ function v3Doc(): any {
 }
 
 describe('版本兼容（compat）', () => {
-  it('v3 → v4：补上 src = siyuan 和 compat', () => {
+  it('v3 → v6：版本和 compat 升到当前，笔记相关字段被去掉', () => {
     const d = normalizePalace(v3Doc());
     expect(d.version).toBe(PALACE_VERSION);
     expect(d.compat).toBe(PALACE_COMPAT);
-    expect(d.src).toBe('siyuan');
+    expect('src' in d).toBe(false);
+    expect('bindings' in d.items[0]).toBe(false);
   });
 
   it('更高版本但声明兼容的数据：能打开，版本号和不认识的字段原样保留', () => {
-    const raw = { ...v3Doc(), version: PALACE_VERSION + 3, compat: PALACE_COMPAT, src: 'obsidian:库', weather: 'rain' };
+    const raw: RawDoc = { ...v3Doc(), version: PALACE_VERSION + 3, compat: PALACE_COMPAT, weather: 'rain' };
     raw.items[0].glow = true;
-    const d = normalizePalace(raw) as any;
+    // 规范化后读回来还要看类型里没有的字段（不认识的字段原样保留）
+    const d = normalizePalace(raw) as PalaceDoc & RawDoc;
     expect(d.version).toBe(PALACE_VERSION + 3);
     expect(d.compat).toBe(PALACE_COMPAT);
-    expect(d.src).toBe('obsidian:库');
     expect(d.weather).toBe('rain');
     expect(d.items[0].glow).toBe(true);
   });
@@ -101,92 +129,15 @@ describe('媒体引用', () => {
     expect(found).toEqual(MEDIA_PARAMS);
   });
 
-  it('palaceMedia：照片、模型、配图，去重', () => {
+  it('palaceMedia：照片、模型，去重', () => {
     const d = normalizePalace({
       ...v3Doc(), items: [
         { id: 'p1', type: 'painting', pos: [0, 0, 0], params: { photo: 'a.webp' } },
         { id: 'p2', type: 'photoFrame', pos: [0, 0, 0], params: { photo: 'a.webp' } },
-        { id: 'm', type: 'model', pos: [0, 0, 0], params: { src: 'm.glb' }, bindings: { '': { blockId: BLOCK, image: 'i.webp' } } },
+        { id: 'm', type: 'model', pos: [0, 0, 0], params: { src: 'm.glb' } },
         { id: 's', type: 'sofa', pos: [0, 0, 0], params: { src: 'not-media' } },
       ],
     });
-    expect(palaceMedia(d).sort()).toEqual(['a.webp', 'i.webp', 'm.glb']);
-  });
-});
-
-describe('公开副本', () => {
-  function privateDoc(): PalaceDoc {
-    return normalizePalace({
-      ...v3Doc(),
-      routes: [{ id: 'route-1', name: '期末复习', stops: ['sofa-1', 'lamp-1', 'shelf-1#b:0:1'] }],
-      items: [
-        { id: 'sofa-1', type: 'sofa', pos: [1, 0, 1], bindings: { '': { blockId: BLOCK, title: '公开的标题', story: '沙发上的故事', image: 'story.webp', share: true, boundAt: 9, storyNote: '20260101000000-bbbbbbb' } } },
-        { id: 'lamp-1', type: 'floorLamp', pos: [2, 0, 2], bindings: { '': { blockId: '20260101000000-ccccccc', title: '私密日记', story: '私密的故事' } } },
-        {
-          id: 'shelf-1', type: 'bookshelf', pos: [3, 0, 0], params: { w: 1.2, source: { box: '20260101000000-nbnbnbn', path: '/', name: '私人笔记本' }, books: { 'doc:20260101000000-fffffff': { c: '#112233' } } },
-          bindings: { 'doc:20260101000000-ddddddd': { blockId: '20260101000000-ddddddd', title: '文档书', share: true }, 'b:0:1': { blockId: '20260101000000-eeeeeee', title: '书', share: true } },
-        },
-        { id: 'pic', type: 'painting', pos: [0, 1.5, 0], params: { photo: 'family.webp', w: .6 } },
-        { id: 'm', type: 'model', pos: [0, 0, 0], params: { src: 'chair.glb', h: 1 } },
-      ],
-    });
-  }
-
-  it('只留公开的记忆桩：没有块 id、笔记来源、写回记录，私密的整个去掉', () => {
-    const doc = privateDoc();
-    const before = JSON.stringify(doc);
-    const pub = toPublicPalace(doc);
-    expect(JSON.stringify(doc)).toBe(before); // 不改原数据
-    const json = JSON.stringify(pub);
-    for (const secret of ['20260101000000', '私密', '私人笔记本', 'storyNote', 'boundAt', 'family.webp', 'story.webp']) {
-      expect(json).not.toContain(secret);
-    }
-    expect(pub.src).toBe(PUBLIC_SRC);
-    const sofa = pub.items.find(i => i.id === 'sofa-1');
-    expect(sofa.bindings['']).toEqual({ blockId: '~' + locusKey('sofa-1', ''), src: PUBLIC_SRC, share: true, title: '公开的标题', story: '沙发上的故事' });
-    expect(pub.items.find(i => i.id === 'lamp-1').bindings).toBeUndefined();
-    const shelf = pub.items.find(i => i.id === 'shelf-1');
-    expect(shelf.params).toEqual({ w: 1.2 });
-    expect(Object.keys(shelf.bindings)).toEqual(['b:0:1']);
-    // 模型属于家具本身，保留；照片默认不带
-    expect(pub.items.find(i => i.id === 'm').params.src).toBe('chair.glb');
-    expect(pub.items.find(i => i.id === 'pic').params.photo).toBeUndefined();
-    expect(publicMedia(pub)).toEqual(['chair.glb']);
-    // 路线只剩公开的站
-    expect(pub.routes).toEqual([{ id: 'route-1', name: '期末复习', stops: ['sofa-1', 'shelf-1#b:0:1'] }]);
-  });
-
-  it('photos：带上照片和公开记忆桩的配图', () => {
-    const pub = toPublicPalace(privateDoc(), { photos: true });
-    expect(pub.items.find(i => i.id === 'pic').params.photo).toBe('family.webp');
-    expect(pub.items.find(i => i.id === 'sofa-1').bindings[''].image).toBe('story.webp');
-    expect(publicMedia(pub).sort()).toEqual(['chair.glb', 'family.webp', 'story.webp']);
-    // 私密记忆桩的配图仍然不带
-    expect(JSON.stringify(pub)).not.toContain('私密');
-  });
-
-  it('白名单：以后新加的字段默认不公开', () => {
-    const doc = privateDoc() as any;
-    doc.secretField = 'x';
-    doc.items[0].secretItemField = 'y';
-    const json = JSON.stringify(toPublicPalace(doc));
-    expect(json).not.toContain('secretField');
-    expect(json).not.toContain('secretItemField');
-  });
-
-  it('公开副本可以被正常读取', () => {
-    const pub = toPublicPalace(privateDoc(), { photos: true });
-    const back = normalizePalace(JSON.parse(JSON.stringify(pub)));
-    expect(back.items.length).toBe(pub.items.length);
-    expect(back.src).toBe(PUBLIC_SRC);
-  });
-
-  it('世界：只留已发布的宫殿', () => {
-    const w: PalaceWorld = createWorld();
-    w.regions[0].palaces = [{ palaceId: 'a', pos: [0, 0], rot: 0 }, { palaceId: 'secret', pos: [10, 0], rot: 90 }];
-    const pub = toPublicWorld(w, ['a']);
-    expect(pub.regions[0].palaces.map(p => p.palaceId)).toEqual(['a']);
-    expect(w.regions[0].palaces.length).toBe(2);
-    expect(JSON.stringify(pub)).not.toContain('secret');
+    expect(palaceMedia(d).sort()).toEqual(['a.webp', 'm.glb']);
   });
 });

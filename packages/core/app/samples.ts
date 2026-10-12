@@ -1,7 +1,7 @@
-// dev-only：演示用的几座宫殿（小镇里的邻居）
-import { uid, gid, setBinding, isZh, PALACE_VERSION, PALACE_COMPAT, type PalaceDoc, type PalaceItem } from '../src';
+// 演示用的几座宫殿（小镇里的邻居）
+import { uid, gid, isZh, PALACE_FORMAT, PALACE_VERSION, PALACE_COMPAT, type PalaceDoc, type PalaceItem } from '../src';
 
-/** 演示数据按界面语言给中文或英文（playground 专用，不走字典） */
+/** 演示数据按界面语言给中文或英文（不走字典） */
 export const L = <T,>(zh: T, en: T): T => (isZh() ? zh : en);
 /** 房间名：中文界面「名字 + 英文小字」，英文界面只用英文 */
 const room = (zh: string, en: string) => (isZh() ? { name: zh, en } : { name: en });
@@ -11,11 +11,11 @@ import * as st from '../src/structure';
 const H = 2.8;
 const blank = (id: string): PalaceDoc => {
   const now = Date.now();
-  return { format: 'kmind-palace', version: PALACE_VERSION, compat: PALACE_COMPAT, id: gid('palace-'), name: id, createdAt: now, updatedAt: now, wallHeight: H, rooms: [], walls: [], items: [] };
+  return { format: PALACE_FORMAT, version: PALACE_VERSION, compat: PALACE_COMPAT, id: gid('palace-'), name: id, createdAt: now, updatedAt: now, wallHeight: H, rooms: [], walls: [], items: [] };
 };
 const findWall = (d: PalaceDoc, axis: 'x' | 'z', c: number, s: number) => d.walls.find(w => { const L = st.wallLine(w); return L.axis === axis && Math.abs(L.c - c) < .02 && s > L.lo && s < L.hi; });
 
-function item(d: PalaceDoc, type: string, pos: [number, number, number], rot = 0, params?: any, extra: Partial<PalaceItem> = {}) {
+function item(d: PalaceDoc, type: string, pos: [number, number, number], rot = 0, params?: Record<string, unknown>, extra: Partial<PalaceItem> = {}) {
   const it: PalaceItem = { id: uid(type + '-'), type, pos, rot, params, ...extra };
   d.items.push(it);
   return it;
@@ -56,12 +56,8 @@ function mkRust() {
   st.addOpening(d, findWall(d, 'x', 0, 2.5), 'window', 2.5);
   st.addOpening(d, findWall(d, 'z', 0, 3), 'window', 3.2);
   st.setFacePaint(findWall(d, 'x', 0, 2), 1, .1, 4.94, { color: '#6f8075' });
-  // 书架上的书单独绑定（部件编号 b:层:序号，层从下往上数）
-  const shelf = item(d, 'bookshelf', [1.0, 0, .3], 0, { w: 1.2, h: 2.0, wood: 'walnut' });
-  const books: [string, string][] = L([['b:4:0', '第 4 章 · 所有权'], ['b:4:3', '第 10 章 · 泛型与 trait'], ['b:3:2', '第 16 章 · 无畏并发']], [['b:4:0', 'Ch. 4 · Ownership'], ['b:4:3', 'Ch. 10 · Generics & traits'], ['b:3:2', 'Ch. 16 · Fearless concurrency']]);
-  books.forEach(([slot, title], i) => setBinding(shelf, slot, { blockId: `20260930${200000 + i}-rustbook${i}fake`, title, boundAt: Date.now() }));
-  // 书架 = 笔记本：摆的是「Rust 学习」里的文档
-  item(d, 'bookshelf', [3.8, 0, .3], 0, { w: 1.2, h: 2.0, wood: 'walnut', source: { box: 'nb-rust', path: '/', name: L('Rust 学习', 'Learning Rust') } }, { name: L('笔记书架', 'Notebook shelf') });
+  item(d, 'bookshelf', [1.0, 0, .3], 0, { w: 1.2, h: 2.0, wood: 'walnut' });
+  item(d, 'bookshelf', [3.8, 0, .3], 0, { w: 1.2, h: 2.0, wood: 'walnut' });
   item(d, 'rug', [2.5, 0, 3.4], 0, { w: 2.6, d: 2.0, pattern: 'study' });
   const desk = item(d, 'desk', [2.5, 0, 2.2], 180, { w: 1.4 });
   // 放在书桌上的台灯：挂在书桌下面，随书桌移动
@@ -129,45 +125,11 @@ function mkRoots() {
   return d;
 }
 
-
-/** 演示笔记的正文（回忆揭晓时显示），按块 id */
-export const SAMPLE_NOTES = new Map<string, { title: string; body: string }>();
-
-/** 给前几个物件绑上假的笔记块，让名牌上的记忆桩数量有意义；「标题 :: 正文」会登记成演示笔记 */
-function bindSome(d: PalaceDoc, titles: string[]) {
-  const cands = d.items.filter(i => !['rug', 'painting'].includes(i.type));
-  titles.forEach((raw, i) => {
-    const [t, body] = raw.split(' :: ');
-    const it = cands[i % cands.length];
-    const blockId = `20260930${String(100000 + i)}-${d.name.length}${i}fake`;
-    if (body) SAMPLE_NOTES.set(blockId, { title: t, body });
-    if (it) setBinding(it, '', { blockId, title: t, boundAt: Date.now() });
-  });
-}
-
 export function samplePalaces(): PalaceDoc[] {
   const roots = Object.assign(mkRoots(), { name: L('英语词根宫殿', 'Latin Roots Palace'), color: '#3e4d66' });
-  bindSome(roots, L(['spect = 看', 'port = 拿、运', 'dict = 说', 'duct = 引导', 'scrib = 写', 'mit = 送', 'fer = 带来', 'struct = 建造'],
-    ['spect = look', 'port = carry', 'dict = say', 'duct = lead', 'scrib = write', 'mit = send', 'fer = bring', 'struct = build']));
   const rust = Object.assign(mkRust(), { name: L('Rust 书房', 'Rust Study'), color: '#6d4a3a' });
-  bindSome(rust, L([
-    '所有权三原则 :: 每个值都有一个所有者；同一时刻只能有一个所有者；所有者离开作用域，值就被丢弃。',
-    '生命周期与借用 :: 引用不能比它指向的值活得更久；编译器用生命周期标注检查这一点。',
-    'trait 与泛型 :: trait 定义一组共同行为，泛型函数用 trait bound 约束参数必须实现它。',
-    '错误处理：Result :: 可恢复的错误用 Result<T, E>，? 运算符把错误往上传。',
-    '智能指针 Box / Rc :: Box 把值放到堆上；Rc 用引用计数让多个所有者共享同一个值。',
-  ], [
-    'Three rules of ownership :: Each value has one owner; there is only one owner at a time; when the owner goes out of scope, the value is dropped.',
-    'Lifetimes & borrowing :: A reference must never outlive the value it points to — lifetimes let the compiler check that.',
-    'Traits & generics :: A trait defines shared behavior; generic functions use trait bounds to require it.',
-    'Error handling: Result :: Recoverable errors use Result<T, E>; the ? operator passes errors up the call stack.',
-    'Smart pointers Box / Rc :: Box puts a value on the heap; Rc shares one value between several owners with reference counting.',
-  ]));
   const apt = Object.assign(mkApt(), { name: L('小公寓 · 考研政治', 'Studio · Psychology 101'), color: '#b8563c' });
-  bindSome(apt, L(['唯物辩证法', '认识论', '剩余价值'], ['Classical conditioning', 'Cognitive dissonance', 'Maslow\'s hierarchy']));
   const history = Object.assign(mkHistory(), { name: L('中国历史长廊', 'History Gallery'), color: '#5f7a6c' });
-  bindSome(history, L(['商鞅变法', '贞观之治', '王安石变法', '郑和下西洋', '戊戌变法', '洋务运动'],
-    ['Code of Hammurabi', 'Fall of Rome', 'Magna Carta', 'Printing press', 'French Revolution', 'Industrial Revolution']));
   for (const d of [roots, rust, apt, history]) { st.computeWallNormals(d); materializeDecor(d.items); }
   return [roots, rust, apt, history];
 }

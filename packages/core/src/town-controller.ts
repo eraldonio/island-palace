@@ -1,21 +1,19 @@
 import * as THREE from 'three';
 import type { PalaceView } from './view';
-import { boundLoci, locusKey, type PalaceDoc, type Vec2 } from './schema';
+import { type PalaceDoc, type Vec2 } from './schema';
 import type { RegionLayer } from './world-layer';
 import { ICONS, escapeHtml, timeAgo } from './icons';
 import { html, rich } from './dom';
 import { TEMPLATES, createFromTemplate } from './templates/basic';
 import { THEMES, getTheme } from './themes';
 import * as W from './world';
-import { JourneyPanel } from './journey-panel';
-import { pruneJourneys } from './journey';
 import { t } from './i18n';
 
 /* =====================================================================
  * 小镇 / 群岛层级的交互
  *   近看一座岛：悬停掀屋顶、选中宫殿、布置（拖动 / 旋转宫殿）、建造新宫殿、搬到别的岛
  *   群岛视角：悬停 / 选中岛、双击飞过去、岛屿设置（名字 / 场景）、开辟新岛、布置岛屿
- *   两个层级都能用：宫殿列表（按岛分组）、⌘K 快速跳转（宫殿 / 记忆桩 / 岛）
+ *   两个层级都能用：宫殿列表（按岛分组）、⌘K 快速跳转（宫殿 / 岛）
  * ===================================================================== */
 
 const GRASS_Y = -.15;
@@ -23,7 +21,7 @@ const PEEK_DELAY = 280;
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
 
-interface PaletteItem { kind: 'palace' | 'locus' | 'region'; id: string; item?: string; title: string; sub: string; color: string }
+interface PaletteItem { kind: 'palace' | 'region'; id: string; title: string; sub: string; color: string }
 type Drag =
   | { kind: 'palace'; id: string; regionId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
   | { kind: 'region'; id: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean };
@@ -46,13 +44,9 @@ export class TownController {
   private paletteSel = 0;
   private confirmResolve: ((ok: boolean) => void) | null = null;
   private planCache = new Map<string, DocumentFragment>();
-  /** 旅程面板（跨宫殿路线） */
-  journeys: JourneyPanel;
 
   constructor(private v: PalaceView) {
     this.buildUI();
-    this.journeys = new JourneyPanel(v, v.ui.journeyPanel);
-    v.town.journeyOf = (id) => this.journeys.orderOf(id);
     const labels = v.root.querySelector('.kp-labels') as HTMLElement;
     v.on(labels, 'pointerover', (e: PointerEvent) => {
       const tag = (e.target as HTMLElement).closest<HTMLElement>('.kp-tag');
@@ -126,9 +120,8 @@ export class TownController {
         <div class="kp-seg kp-glass kp-town-only kp-town-view">
           <button class="kp-on" data-act="viewMap" data-ref="segMap" title="${t('地图')}">${rich(ICONS.map)}<span>${t('地图')}</span></button>
           <button data-act="viewList" data-ref="segList" title="${t('宫殿列表')}">${rich(ICONS.list)}<span>${t('列表')}</span></button>
-          <button data-act="viewJourneys" data-ref="segJourney" title="${t('旅程：把几座宫殿的路线串起来回忆')}">${rich(ICONS.route)}<span>${t('旅程')}</span></button>
         </div>
-        <button class="kp-search kp-glass" data-act="palette" title="${t('搜索宫殿、记忆桩或岛（⌘K / Ctrl+K）')}">${rich(ICONS.search)}<span>${t('搜索宫殿或记忆桩')}</span><kbd>⌘K</kbd></button>
+        <button class="kp-search kp-glass" data-act="palette" title="${t('搜索宫殿或岛（⌘K / Ctrl+K）')}">${rich(ICONS.search)}<span>${t('搜索宫殿或岛')}</span><kbd>⌘K</kbd></button>
       </div>
       <nav class="kp-bar kp-glass kp-town-only kp-town-view kp-near-only">
         <button class="kp-primary" data-act="buildPalace" title="${t('在这座岛上建造一座新宫殿')}">${rich(ICONS.plus)}<span>${t('建造宫殿')}</span></button>
@@ -164,10 +157,9 @@ export class TownController {
       <div class="kp-card kp-glass kp-hidden kp-town-only" data-ref="townCard"></div>
       <div class="kp-panel kp-build kp-glass kp-hidden kp-town-only" data-ref="buildPanel"></div>
       <div class="kp-panel kp-list kp-glass kp-hidden kp-town-only" data-ref="townList"></div>
-      <div class="kp-routes kp-journeys kp-glass kp-hidden kp-town-only" data-ref="journeyPanel"></div>
       <div class="kp-overlay kp-hidden" data-ref="paletteWrap">
         <div class="kp-palette kp-glass">
-          <label class="kp-pal-input">${rich(ICONS.search)}<input data-ref="paletteInput" placeholder="${t('搜索宫殿、记忆桩或岛…')}" autocomplete="off" spellcheck="false"></label>
+          <label class="kp-pal-input">${rich(ICONS.search)}<input data-ref="paletteInput" placeholder="${t('搜索宫殿或岛…')}" autocomplete="off" spellcheck="false"></label>
           <div class="kp-pal-list" data-ref="paletteList"></div>
           <div class="kp-pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> ${t('选择')}</span><span><kbd>Enter</kbd> ${t('前往')}</span><span><kbd>Esc</kbd> ${t('关闭')}</span></div>
         </div>
@@ -186,20 +178,17 @@ export class TownController {
   refresh() {
     const v = this.v;
     if (!this.region) return;
-    const all = [...this.docs.values()];
     if (v.far) {
       const placed = this.world.regions.reduce((s, r) => s + r.palaces.filter(p => this.docs.has(p.palaceId)).length, 0);
-      const loci = all.reduce((s, d) => s + W.palaceStats(d).loci, 0);
       v.ui.townTitle.textContent = this.world.name || t('记忆世界');
       v.ui.townSub.textContent = v.planet > .6
         ? `${t('{n} 座岛', { n: this.world.regions.length })} · ${t('拖动转动星球 · 滚轮拉近')}`
-        : [t('{n} 座岛', { n: this.world.regions.length }), t('{n} 座宫殿', { n: placed }), t('{n} 个记忆桩', { n: loci })].join(' · ');
+        : [t('{n} 座岛', { n: this.world.regions.length }), t('{n} 座宫殿', { n: placed })].join(' · ');
       v.ui.townMark.replaceChildren(html`${rich(ICONS.globe)}`);
     } else {
       const docs = this.region.palaces.map(p => this.docs.get(p.palaceId)).filter(Boolean);
-      const loci = docs.reduce((s, d) => s + W.palaceStats(d).loci, 0);
       v.ui.townTitle.textContent = this.region.name;
-      v.ui.townSub.textContent = docs.length ? `${t('{n} 座宫殿', { n: docs.length })} · ${t('{n} 个记忆桩', { n: loci })}` : t('还没有宫殿 · 点「建造宫殿」开始');
+      v.ui.townSub.textContent = docs.length ? t('{n} 座宫殿', { n: docs.length }) : t('还没有宫殿 · 点「建造宫殿」开始');
       v.ui.townMark.textContent = getTheme(this.region.theme).icon;
     }
     for (const s of this.town.shells.values()) {
@@ -221,21 +210,12 @@ export class TownController {
     this.updateMarker();
   }
 
-  /** 打开别的面板（好友）时，收起列表、旅程、建造面板 */
-  closePanels() {
-    this.closePanel();
-    this.toggleList(false);
-    this.toggleJourneys(false);
-  }
-
   /** 进出宫殿之前：收起小镇里的各种临时状态 */
   beforeLevelChange() {
-    if (this.v.social?.panelOpen) this.v.social.togglePanel(false);
     this.cancelPlacing();
     this.setEditing(false);
     this.closePanel();
     this.toggleList(false);
-    this.toggleJourneys(false);
     this.selectedId = this.hoveredId = this.selectedRegion = this.hoveredRegion = null;
     this.tagHover = null;
     this.v.ui.townCard.classList.add('kp-hidden');
@@ -425,20 +405,17 @@ export class TownController {
     if (!doc || !placed || v.far) { card.classList.add('kp-hidden'); return; }
     const st = W.palaceStats(doc);
     const color = placed.roofColor || W.palaceColor(doc);
-    const bound = boundLoci(doc);
     const roof = placed.roof || 'auto';
     const roofs: [W.RoofKind, string][] = [['auto', t('自动')], ['flat', t('平顶')], ['gable', t('坡顶')], ['none', t('无')]];
     const here = v.regionOf(id);
     const others = this.world.regions.filter(r => r !== here);
     if (v.readonly) {
-      // 参观好友 / 网页查看器：只能看
+      // 只读：只能看
       card.replaceChildren(html`
         <button class="kp-close" data-act="townDeselect">×</button>
-        <div class="kp-room">${v.visiting ? t('{name} 的宫殿', { name: v.visiting.owner.name }) : t('宫殿')}</div>
+        <div class="kp-room">${t('宫殿')}</div>
         <h3 class="kp-ro-name"></h3>
-        <div class="kp-stats">${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })}${st.loci ? ` · 📌 ${t('{n} 个公开的记忆桩', { n: st.loci })}` : ''}</div>
-        ${bound.length ? html`<div class="kp-subtitle">${t('记忆桩')}</div><div class="kp-mini">${bound.slice(0, 4).map(it => html`
-          <button data-act="palaceLocus" data-item="${locusKey(it.item.id, it.slot)}"><b>${it.binding.title || ''}</b><span>${v.locusName(it.item, it.slot)}</span></button>`)}</div>` : ''}
+        <div class="kp-stats">${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })}</div>
         <div class="kp-row"><button class="kp-primary kp-grow" data-act="palaceEnter">${t('进去参观 →')}</button></div>`);
       card.querySelector('.kp-ro-name').textContent = doc.name;
       card.classList.remove('kp-hidden');
@@ -448,11 +425,7 @@ export class TownController {
       <button class="kp-close" data-act="townDeselect">×</button>
       <div class="kp-room">${t('宫殿 · {time}更新', { time: timeAgo(doc.updatedAt) })}</div>
       <input class="kp-name" data-field="palaceName" maxlength="40" spellcheck="false">
-      <div class="kp-stats">${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })} · 📌 ${st.loci}${v.dueCount(doc) ? html` · <b class="kp-due-text">${t('待复习 {n}', { n: v.dueCount(doc) })}</b>` : ''}</div>
-      ${bound.length ? html`<div class="kp-row kp-recall-row"><button class="kp-primary" data-act="palaceRecall" data-id="${doc.id}">${rich(ICONS.route)}<span>${t('进去回忆')}${v.dueCount(doc) ? ` · ${t('{n} 个待复习', { n: v.dueCount(doc) })}` : ''}</span></button></div>` : ''}
-      ${bound.length ? html`<div class="kp-subtitle">${t('记忆桩')}</div><div class="kp-mini">${bound.slice(0, 4).map(it => html`
-        <button data-act="palaceLocus" data-item="${locusKey(it.item.id, it.slot)}"><b>${it.binding.title || it.binding.blockId}</b><span>${v.locusName(it.item, it.slot)}</span></button>`)}
-        ${bound.length > 4 ? html`<div class="kp-more-note">${t('还有 {n} 个…', { n: bound.length - 4 })}</div>` : ''}</div>` : ''}
+      <div class="kp-stats">${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })}</div>
       <div class="kp-subtitle">${t('主题色')}</div>
       <div class="kp-swatches kp-swatches-10">${W.PALACE_COLORS.map(c => html`<span class="kp-swatch${c === color ? ' kp-on' : ''}" data-act="palaceColor" data-color="${c}" style="background:${c}" title="${c}"></span>`)}</div>
       <div class="kp-subtitle">${t('屋顶')}</div>
@@ -461,7 +434,6 @@ export class TownController {
         <option value="">${getTheme(here?.theme).icon + ' ' + (here?.name || '')}${t('（当前）')}</option>
         ${others.map(r => html`<option value="${r.id}">${getTheme(r.theme).icon + ' ' + r.name}</option>`)}
       </select></label>` : ''}
-      ${v.social?.publishSection(doc)}
       <div class="kp-row">
         <button data-act="palaceMove" title="${t('拖动到别处 / 旋转')}">${rich(ICONS.move)} ${t('移动')}</button>
         <button class="kp-danger" data-act="palaceDelete" title="${t('删除这座宫殿')}">${t('删除')}</button>
@@ -477,20 +449,19 @@ export class TownController {
     if (!r) { card.classList.add('kp-hidden'); return; }
     const theme = getTheme(r.theme);
     const docs = r.palaces.map(p => this.docs.get(p.palaceId)).filter(Boolean);
-    const loci = docs.reduce((s, d) => s + W.palaceStats(d).loci, 0);
     const last = this.world.regions.length <= 1;
     card.replaceChildren(html`
       <button class="kp-close" data-act="regionDeselect">×</button>
       <div class="kp-room">${t('岛屿')} · ${theme.icon} ${t(theme.name)}</div>
       <input class="kp-name" data-field="regionName" maxlength="40" spellcheck="false">
-      <div class="kp-stats">${t('{n} 座宫殿', { n: docs.length })} · 📌 ${loci}</div>
+      <div class="kp-stats">${t('{n} 座宫殿', { n: docs.length })}</div>
       <div class="kp-subtitle">${t('场景')}</div>
       <div class="kp-themes">${THEMES.map(th => html`
         <button class="kp-theme${th.id === r.theme ? ' kp-on' : ''}" data-act="regionTheme" data-theme="${th.id}" title="${t(th.desc)}">
           <i style="background:linear-gradient(135deg, ${th.colors[0]} 0 55%, ${th.colors[1]} 55% 78%, ${th.colors[2]} 78%)">${th.icon}</i><span>${t(th.name)}</span>
         </button>`)}</div>
       ${docs.length ? html`<div class="kp-subtitle">${t('岛上的宫殿')}</div><div class="kp-mini">${docs.slice(0, 5).map(d => html`
-        <button data-act="regionPalace" data-id="${d.id}"><b>${d.name}</b><span>📌 ${W.palaceStats(d).loci}</span></button>`)}
+        <button data-act="regionPalace" data-id="${d.id}"><b>${d.name}</b></button>`)}
         ${docs.length > 5 ? html`<div class="kp-more-note">${t('还有 {n} 座…', { n: docs.length - 5 })}</div>` : ''}</div>` : html`<div class="kp-note-sm">${t('这座岛还是空的，前往后点「建造宫殿」。')}</div>`}
       <div class="kp-row">
         <button class="kp-danger" data-act="regionDelete" ${docs.length || last ? 'disabled' : ''} title="${last ? t('至少要保留一座岛') : docs.length ? t('先把岛上的宫殿搬走或删除') : t('删除这座空岛')}">${t('删除')}</button>
@@ -501,7 +472,6 @@ export class TownController {
   }
 
   onInput(e: Event, commit: boolean) {
-    if (this.journeys.onInput(e, commit)) return;
     const el = e.target as HTMLInputElement;
     const field = el.dataset?.field;
     if (field === 'palaceName' && this.selectedId) {
@@ -867,9 +837,7 @@ export class TownController {
     const v = this.v, doc = this.docs.get(id), region = v.regionOf(id);
     if (!doc || !region) return;
     const st = W.palaceStats(doc);
-    const ok = await this.confirm(t('删除「{name}」？', { name: doc.name }), st.loci
-      ? t('宫殿里的 {items} 个物件和 {loci} 个记忆桩绑定会一起删除，笔记本身不受影响。此操作无法撤销。', { items: st.items, loci: st.loci })
-      : t('宫殿里的 {n} 个物件会一起删除，笔记本身不受影响。此操作无法撤销。', { n: st.items }), t('删除'));
+    const ok = await this.confirm(t('删除「{name}」？', { name: doc.name }), t('宫殿里的 {n} 个物件会一起删除，此操作无法撤销。', { n: st.items }), t('删除'));
     if (!ok || !this.docs.has(id)) return;
     v.closePeek(true);
     this.select(null);
@@ -879,11 +847,8 @@ export class TownController {
     this.town.rebuildLand(region.id, this.docs);
     this.undoStack = [];
     this.redoStack = [];
-    // 旅程里这座宫殿的段一起去掉
-    pruneJourneys(this.world, pid => this.docs.has(pid));
     v.host.onDocDelete?.(id);
     v.worldChanged();
-    this.journeys.render();
     v.host.notify?.(t('已删除「{name}」', { name: doc.name }));
     v.invalidate(3);
   }
@@ -915,22 +880,10 @@ export class TownController {
   private toggleList(on = !this.listOpen) {
     this.listOpen = on;
     const v = this.v;
-    if (on && this.journeys.open) this.toggleJourneys(false);
     v.ui.townList.classList.toggle('kp-hidden', !on);
-    v.ui.segMap?.classList.toggle('kp-on', !on && !this.journeys.open);
+    v.ui.segMap?.classList.toggle('kp-on', !on);
     v.ui.segList?.classList.toggle('kp-on', on);
     if (on) { this.closePanel(); this.renderList(); }
-  }
-
-  /** 旅程面板：打开时名牌上标出每座宫殿是第几段 */
-  toggleJourneys(on = !this.journeys.open) {
-    if (on === this.journeys.open) return;
-    const v = this.v;
-    if (on) { this.toggleList(false); this.closePanel(); }
-    this.journeys.toggle(on);
-    v.ui.segJourney?.classList.toggle('kp-on', on);
-    v.ui.segMap?.classList.toggle('kp-on', !on && !this.listOpen);
-    for (const s of this.town.shells.values()) this.town.updateTag(s);
   }
 
   private renderList() {
@@ -943,7 +896,7 @@ export class TownController {
       return html`<div class="kp-list-row${d.id === this.selectedId ? ' kp-on' : ''}" data-id="${d.id}">
         <button class="kp-list-main" data-act="listPick" data-id="${d.id}">
           <i style="background:${color}"></i>
-          <span><b>${d.name}</b><small>${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })} · 📌 ${st.loci} · ${timeAgo(d.updatedAt)}</small></span>
+          <span><b>${d.name}</b><small>${t('{n} 个房间', { n: st.rooms })} · ${t('{n} 个物件', { n: st.items })} · ${timeAgo(d.updatedAt)}</small></span>
         </button>
         <button class="kp-list-go" data-act="listEnter" data-id="${d.id}" title="${t('进入')}">→</button>
       </div>`;
@@ -995,7 +948,7 @@ export class TownController {
           if (!d) continue;
           const st = W.palaceStats(d);
           const color = p.roofColor || W.palaceColor(d);
-          if (match(d.name + ' ' + r.name)) out.push({ kind: 'palace', id: d.id, title: d.name, sub: `${d.id === currentId ? t('当前所在 · ') : ''}${icon} ${r.name} · ${t('{n} 个房间', { n: st.rooms })} · 📌 ${st.loci}`, color });
+          if (match(d.name + ' ' + r.name)) out.push({ kind: 'palace', id: d.id, title: d.name, sub: `${d.id === currentId ? t('当前所在 · ') : ''}${icon} ${r.name} · ${t('{n} 个房间', { n: st.rooms })}`, color });
         }
       }
       if (tokens.length) {
@@ -1003,30 +956,18 @@ export class TownController {
           const th = getTheme(r.theme), thName = t(th.name);
           if (match(r.name + ' ' + thName + ' ' + th.name)) out.push({ kind: 'region', id: r.id, title: `${th.icon} ${r.name}`, sub: `${thName} · ${t('{n} 座宫殿', { n: r.palaces.length })}`, color: th.colors[0] });
         }
-        for (const r of this.world.regions) {
-          for (const p of r.palaces) {
-            const d = this.docs.get(p.palaceId);
-            if (!d) continue;
-            const color = p.roofColor || W.palaceColor(d);
-            for (const { item: it, slot, binding } of boundLoci(d)) {
-              const title = binding.title || binding.blockId, where = `${v.locusName(it, slot)} · ${d.name}`;
-              if (match(title + ' ' + where)) out.push({ kind: 'locus', id: d.id, item: locusKey(it.id, slot), title, sub: where, color });
-              if (out.length > 80) break;
-            }
-          }
-        }
       }
       this.palette = out.slice(0, 60);
       this.paletteSel = Math.min(this.paletteSel, Math.max(0, this.palette.length - 1));
     }
-    const kinds = { palace: t('宫殿'), locus: t('记忆桩'), region: t('岛') };
+    const kinds = { palace: t('宫殿'), region: t('岛') };
     const list = v.ui.paletteList;
     list.replaceChildren(html`${this.palette.length ? this.palette.map((it, i) => html`
       <button class="kp-pal-row${i === this.paletteSel ? ' kp-on' : ''}" data-act="palPick" data-i="${i}">
-        <i style="background:${it.color}"></i>${it.kind === 'locus' ? html`<em>📌</em>` : ''}
+        <i style="background:${it.color}"></i>
         <span><b>${it.title}</b><small>${it.sub}</small></span>
         <kbd>${kinds[it.kind]}</kbd>
-      </button>`) : html`<div class="kp-empty">${t('没有找到匹配的宫殿、记忆桩或岛')}</div>`}`);
+      </button>`) : html`<div class="kp-empty">${t('没有找到匹配的宫殿或岛')}</div>`}`);
     list.querySelector('.kp-on')?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -1035,8 +976,7 @@ export class TownController {
     const v = this.v;
     if (it.kind === 'region') {
       if (v.level === 'palace') { v.exitPalace(); window.setTimeout(() => v.flyToRegion(it.id), 1200); } else v.flyToRegion(it.id);
-    } else if (it.kind === 'palace') v.enterPalace(it.id);
-    else v.enterPalace(it.id, { focusItem: it.item });
+    } else v.enterPalace(it.id);
   }
 
   // =====================================================================
@@ -1173,7 +1113,6 @@ export class TownController {
       else if (this.panel) this.closePanel();
       else if (this.editing) this.setEditing(false);
       else if (this.listOpen) this.toggleList(false);
-      else if (this.journeys.open) this.toggleJourneys(false);
       else if (this.selectedId) this.select(null);
       else if (this.selectedRegion) this.selectRegion(null);
       else return false;
@@ -1198,7 +1137,6 @@ export class TownController {
       case 'confirmNo': this.closeConfirm(false); return true;
     }
     if (v.level !== 'town') return false;
-    if (this.journeys.onAction(act, el)) return true;
     const id = this.selectedId;
     switch (act) {
       case 'tag': if (!this.placing && !v.far) this.select(el.dataset.id); return true;
@@ -1235,9 +1173,8 @@ export class TownController {
         if (rid) { v.flyToRegion(rid); this.select(pid); }
         return true;
       }
-      case 'viewMap': this.toggleList(false); this.toggleJourneys(false); return true;
+      case 'viewMap': this.toggleList(false); return true;
       case 'viewList': this.toggleList(true); return true;
-      case 'viewJourneys': this.toggleJourneys(true); return true;
       case 'listRegion': this.toggleList(false); v.flyToRegion(el.dataset.region); return true;
       case 'listPick': {
         const pid = el.dataset.id, s = this.town.shells.get(pid), layer = s && this.layerOf(s.regionId);
@@ -1251,8 +1188,6 @@ export class TownController {
       }
       case 'listEnter': this.toggleList(false); v.enterPalace(el.dataset.id); return true;
       case 'palaceEnter': if (id) v.enterPalace(id); return true;
-      case 'palaceLocus': if (id) v.enterPalace(id, { focusItem: el.dataset.item }); return true;
-      case 'palaceRecall': if (id) v.enterPalace(id, { recall: true }); return true;
       case 'palaceMove': this.setEditing(true); return true;
       case 'palaceDelete': if (id) void this.deletePalace(id); return true;
       case 'palaceColor': {

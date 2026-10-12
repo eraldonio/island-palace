@@ -1,6 +1,5 @@
 import { cleanLook, type Look } from './look';
-import { gid, boundLoci, type PalaceDoc, type Rect, type Vec2 } from './schema';
-import type { PaoTable } from './pao';
+import { gid, type PalaceDoc, type Rect, type Vec2 } from './schema';
 import { t } from './i18n';
 
 /* =====================================================================
@@ -14,11 +13,13 @@ import { t } from './i18n';
  *
  * 版本：
  *   1  区域 + 宫殿摆放
- *   2  旅程 journeys（跨宫殿路线）、数字编码表 pao、小管家 pet；只是新增可选字段，compat 仍为 1
+ *   2  小管家 pet；只是新增可选字段，compat 仍为 1
+ *   3  删除旅程 journeys 与数字编码表 pao（随记笔记功能一起去掉）；只是去掉可选字段，compat 仍为 1
  * ===================================================================== */
 
+/** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的世界文件仍然认得出来（同 PALACE_FORMAT） */
 export const WORLD_FORMAT = 'kmind-palace-world';
-export const WORLD_VERSION = 2;
+export const WORLD_VERSION = 3;
 /** 读取本版本写出的世界数据至少需要的版本（规则同 PALACE_COMPAT） */
 export const WORLD_COMPAT = 1;
 
@@ -59,24 +60,8 @@ export interface PalaceWorld {
   createdAt: number;
   updatedAt: number;
   regions: WorldRegion[];
-  /** 旅程：把几座宫殿里的路线按顺序串起来，回忆时一座走完接着去下一座 */
-  journeys?: PalaceJourney[];
-  /** 数字编码表（00–99 的人物 / 动作 / 物件），只存改过的 */
-  pao?: PaoTable;
   /** 小管家（宠物）：名字、外观；hidden 时不在宫殿里出现 */
   pet?: { name: string; look: Look; hidden?: boolean };
-}
-
-/** 旅程的一段：某座宫殿里的一条路线（routeId 为 'auto' 时是那座宫殿的「全部记忆桩」默认路线） */
-export interface JourneyLeg {
-  palaceId: string;
-  routeId: string;
-}
-
-export interface PalaceJourney {
-  id: string;
-  name: string;
-  legs: JourneyLeg[];
 }
 
 /** 宫殿主题色（名牌圆点、屋顶） */
@@ -124,6 +109,22 @@ export function regionOrigin(r: WorldRegion): Vec2 {
   return r.origin || [0, 0];
 }
 
+/** 早期版本写在世界文件上的旅程 / 数字编码表：读入时删掉 */
+interface LegacyWorldFields {
+  journeys?: unknown;
+  pao?: unknown;
+}
+
+/** 从版本 n 升到 n + 1 */
+const MIGRATIONS: Record<number, (w: PalaceWorld) => void> = {
+  2(w) {
+    // 旅程、数字编码表随记笔记功能一起删除；这些字段不在 PalaceWorld 里，按可选字段临时看一眼
+    const old = w as PalaceWorld & LegacyWorldFields;
+    delete old.journeys;
+    delete old.pao;
+  },
+};
+
 /** 校验并规范化外部数据；无法识别时抛出错误 */
 export function normalizeWorld(raw: unknown): PalaceWorld {
   const w = raw as PalaceWorld;
@@ -139,18 +140,7 @@ export function normalizeWorld(raw: unknown): PalaceWorld {
   }));
   if (!regions.length) regions.push(createRegion());
   const out: PalaceWorld = { ...w, version: Math.max(version, WORLD_VERSION), compat: Math.max(Number(w.compat) || 0, WORLD_COMPAT), regions };
-  const journeys = (Array.isArray(w.journeys) ? w.journeys : [])
-    .filter(j => j && typeof j.id === 'string' && Array.isArray(j.legs))
-    .map(j => ({ ...j, name: typeof j.name === 'string' && j.name ? j.name : t('旅程'), legs: j.legs.filter(l => l && typeof l.palaceId === 'string' && typeof l.routeId === 'string').map(l => ({ ...l })) }));
-  if (journeys.length) out.journeys = journeys; else delete out.journeys;
-  const codes: PaoTable['codes'] = {};
-  for (const [k, e] of Object.entries((w.pao && typeof w.pao === 'object' && w.pao.codes) || {})) {
-    if (!/^\d\d$/.test(k) || !e || typeof e !== 'object') continue;
-    const c: Record<string, string> = {};
-    for (const f of ['p', 'a', 'o'] as const) if (typeof e[f] === 'string' && e[f].trim()) c[f] = e[f].trim().slice(0, 20);
-    if (Object.keys(c).length) codes[k] = c;
-  }
-  if (Object.keys(codes).length) out.pao = { codes }; else delete out.pao;
+  for (let v = version; v < WORLD_VERSION; v++) MIGRATIONS[v]?.(out);
   if (w.pet && typeof w.pet === 'object') {
     out.pet = { name: typeof w.pet.name === 'string' && w.pet.name.trim() ? w.pet.name.trim().slice(0, 20) : t(PET_NAME), look: cleanLook(w.pet.look) };
     if (w.pet.hidden) out.pet.hidden = true;
@@ -258,13 +248,12 @@ export function frontDoor(doc: PalaceDoc): { x: number; z: number; nx: number; n
   return null;
 }
 
-export interface PalaceStats { rooms: number; items: number; loci: number }
+export interface PalaceStats { rooms: number; items: number }
 
 export function palaceStats(doc: PalaceDoc): PalaceStats {
   return {
     rooms: doc.rooms.filter(r => r.floor).length,
     items: doc.items.length,
-    loci: boundLoci(doc).length,
   };
 }
 

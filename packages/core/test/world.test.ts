@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as W from '../src/world';
 import { createFromTemplate } from '../src/templates/basic';
-import { setBinding, type PalaceDoc } from '../src/schema';
+import type { PalaceDoc } from '../src/schema';
 
 function docsMap(...docs: PalaceDoc[]) {
   return new Map(docs.map(d => [d.id, d]));
@@ -33,11 +33,28 @@ describe('世界：摆放', () => {
     expect(Math.hypot(c1.x - c0.x, c1.z - c0.z)).toBeGreaterThanOrEqual(c0.r + c1.r + W.SEA_GAP - .5);
   });
 
-  it('palaceStats 统计整件和部件的记忆桩', () => {
+  it('palaceStats 统计房间和物件', () => {
     const d = createFromTemplate('cottage', 'A');
     d.items.push({ id: 's', type: 'bookshelf', pos: [0, 0, 0] });
-    setBinding(d.items[d.items.length - 1], '', { blockId: 'x' });
-    setBinding(d.items[d.items.length - 1], 'b:0:1', { blockId: 'y' });
-    expect(W.palaceStats(d).loci).toBe(2);
+    const st = W.palaceStats(d);
+    expect(st.items).toBe(d.items.length);
+    expect(st.rooms).toBe(d.rooms.filter(r => r.floor).length);
+  });
+
+  it('上游世界数据里的旅程 / 数字编码表被清掉', () => {
+    const raw: Record<string, unknown> = {
+      ...W.createWorld(), version: 2,
+      journeys: [{ id: 'j', name: '旅程', legs: [{ palaceId: 'a', routeId: 'auto' }] }],
+      pao: { codes: { '00': { p: '人物', a: '动作', o: '物件' } } },
+    };
+    const out = W.normalizeWorld(raw);
+    expect(out.version).toBe(W.WORLD_VERSION);
+    expect(out.compat).toBe(W.WORLD_COMPAT);
+    expect('journeys' in out).toBe(false);
+    expect('pao' in out).toBe(false);
+    // 其余字段原样保留
+    expect(out.id).toBe(raw.id);
+    expect(out.name).toBe(raw.name);
+    expect(out.regions.length).toBe(1);
   });
 });

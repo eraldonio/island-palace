@@ -1,0 +1,38 @@
+/* 独立网页版的页面装饰：右上角的设置按钮 + 大模型设置对话框 */
+.ip-gear {
+  position: fixed; top: 12px; right: 12px; z-index: 40;
+  padding: 7px 13px; border: 0; border-radius: 10px; cursor: pointer;
+  background: rgba(255, 253, 249, .92); color: #2f2925;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  box-shadow: 0 4px 14px rgba(50, 35, 20, .18);
+}
+.ip-gear:hover { background: #fffdf9; }
+
+.ip-mask {
+  position: fixed; inset: 0; z-index: 80; display: grid; place-items: start center; padding: 12vh 16px 16px;
+  background: rgba(40, 30, 20, .28); overflow: auto;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+}
+.ip-dialog {
+  width: min(460px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  border-radius: 16px; background: #fffdf9; color: #2f2925; box-shadow: 0 18px 50px rgba(50, 35, 20, .3);
+}
+.ip-dialog h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.ip-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #7a6d60; }
+.ip-field input {
+  box-sizing: border-box; width: 100%; padding: 8px 11px; border: 1px solid #e3d9cc; border-radius: 10px;
+  font: inherit; font-size: 13px; color: #2f2925; background: #fff; outline: none;
+}
+.ip-field input:focus { border-color: #ef8235; box-shadow: 0 0 0 3px rgba(239, 130, 53, .15); }
+.ip-note { font-size: 12px; line-height: 1.5; color: #9a8d80; }
+.ip-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.ip-actions .ip-status { flex: 1; min-width: 0; font-size: 12px; color: #6f8075; overflow-wrap: anywhere; }
+.ip-actions .ip-status.ip-error { color: #b8563c; }
+.ip-actions button {
+  padding: 8px 14px; border: 1px solid #e3d9cc; border-radius: 10px; background: #fff; color: #2f2925;
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.ip-actions button:hover { background: #f7f0e7; }
+.ip-actions button:disabled { opacity: .55; cursor: default; }
+.ip-actions .ip-primary { border-color: #ef8235; background: #ef8235; color: #fff; }
+.ip-actions .ip-primary:hover { background: #e0762c; }

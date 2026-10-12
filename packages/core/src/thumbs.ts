@@ -50,7 +50,7 @@ export class ThumbnailRenderer {
       const cached = this.cache.get(preset.id);
       if (cached) { resolve(cached); continue; }
       let url = '';
-      try { url = this.draw(preset); } catch (e) { console.warn(t('[kmind-palace] 缩略图生成失败'), preset.id, e); }
+      try { url = this.draw(preset); } catch (e) { console.warn(t('[island-palace] 缩略图生成失败'), preset.id, e); }
       if (url) this.cache.set(preset.id, url);
       resolve(url);
     }
