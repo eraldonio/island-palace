@@ -7,6 +7,8 @@ import { createCatalog } from '../src/catalog';
 import { getTheme } from '../src/themes';
 import { commonMats, GRASS_Y, WATER_Y, type ThemeCtx, type PropPlace } from '../src/themes/common';
 import { bakeRegionProps, decorateNow, propKind, propKinds, registerProp } from '../src/props';
+import { WorldLayer, type RegionLayer } from '../src/world-layer';
+import { createFromTemplate } from '../src/templates/basic';
 import { PLAZA_R, regionLift, type WorldRegion } from '../src/world';
 
 /**
@@ -208,5 +210,43 @@ describe('岛上的摆设：抬高（lifted）不会被落位丢掉', () => {
     // 也有东西就坐在草地上（树、灯……）：高度不是清一色的
     expect(boxes.some(b => b.min.y <= GRASS_Y + 0.01)).toBe(true);
     expect(new Set(boxes.map(b => +b.min.y.toFixed(4))).size).toBeGreaterThan(1);
+  });
+});
+
+describe('摆设批次：重建时旧批次会被摘掉', () => {
+  /** 场景里的 decor 批次个数（按名字数，不用碰私有字段） */
+  const decorBatches = (layer: RegionLayer) => {
+    let n = 0;
+    layer.group.traverse(o => { if (o.name === 'decor') n++; });
+    return n;
+  };
+
+  /**
+   * 换选中、拖放、增删、改参数都会重走 rebuildDecor：旧批次没摘掉的话，场景里会一层层
+   * 叠着旧复印件——拖动过的摆设会在旧位置留下一个影子（看起来像被复制了一份）。
+   */
+  it('烘焙过的岛和程序化生成的岛，反复重建都只留一个批次', () => {
+    const K = createKit({ maxAniso: 1 });
+    const world = new WorldLayer(K, createCatalog(K, 2.8));
+    for (const baked of [true, false]) {
+      const doc = createFromTemplate('cottage', baked ? 'BatchA' : 'BatchB');
+      const region: WorldRegion = {
+        ...makeRegion('island'),
+        palaces: [{ palaceId: doc.id, pos: [0, 0], rot: 0 }],
+        ...(baked ? { props: [] } : {}),
+      };
+      const docs = new Map([[doc.id, doc]]);
+      world.addRegion(region, docs);
+      const layer = world.regions.get(region.id);
+      expect(layer).toBeTruthy();
+      layer!.rebuildLand(docs);
+      expect(decorBatches(layer!)).toBe(1);
+      const stable = layer!.land.children.length;
+      layer!.rebuildDecor();
+      layer!.rebuildDecor();
+      expect(decorBatches(layer!)).toBe(1);
+      // 也没有别的残留（比如上一批脱离批次的个体）挂在岛上
+      expect(layer!.land.children.length).toBe(stable);
+    }
   });
 });

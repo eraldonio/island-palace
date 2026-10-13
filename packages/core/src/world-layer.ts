@@ -106,8 +106,8 @@ export class RegionLayer {
   private radial: ((a: number) => number) | null = null;
   /** 选中的摆设：脱离批次单独渲染（能高亮、能拖） */
   private selected: string | null = null;
-  /** 合批后的装饰批次（广场铺装 + 摆设） */
-  private decor: THREE.Group | null = null;
+  /** 合批后的装饰批次（广场铺装 + 摆设）：留着引用，下次重建要把它摘掉 */
+  private decor: THREE.Object3D | null = null;
   /** 选中的那个摆设的个体（脱离批次，挂在 land 下） */
   private selRoot: THREE.Group | null = null;
   /** 地形参数快照：重建摆设 / 烘焙时不用再跑一遍地形 */
@@ -247,7 +247,9 @@ export class RegionLayer {
     if (data === undefined) this.theme.decorate(ctx);
     else this.placeProps(ctx, data);
     this.landmarks = ctx.landmarks;
-    this.addBatch(ctx.raw, 'decor');
+    // 合批结果必须留个引用：不然下一次重建（换选中 / 增删 / 改参数）丢不掉旧批次，
+    // 旧批次会一直留在场景里——拖动过的摆设会在旧位置留下一个影子（看起来像被复制了一份）
+    this.decor = this.addBatch(ctx.raw, 'decor');
     this.lightUpNew();
   }
 
@@ -311,13 +313,14 @@ export class RegionLayer {
     this.decor = this.selRoot = null;
   }
 
-  /** 按材质合批后挂到 land 上（绘制调用保持和以前一样少）；点光源会被搬到合批结果里 */
-  private addBatch(raw: THREE.Group, name: string) {
+  /** 按材质合批后挂到 land 上（绘制调用保持和以前一样少）；点光源会被搬到合批结果里。返回合批结果，调用方要留着它好在下一次重建时摘掉 */
+  private addBatch(raw: THREE.Group, name: string): THREE.Object3D {
     raw.updateMatrixWorld(true);
     const merged = mergeStatic(raw);
     disposeTree(raw);
     merged.name = name;
     this.land.add(merged);
+    return merged;
   }
 
   /** 从 Kit 的灯光登记表里摘掉一棵子树里的点光源（重建 / 清理都要做，不然 LAMPS 越积越多） */
