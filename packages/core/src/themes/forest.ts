@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { rand, rr, seedFromString } from '../random';
 import {
-  GRASS_Y, type ThemePack, type ThemeCtx, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot, innerSpot,
-  lampPosts, scatter, leafyTree, conifer, alongShore, shrub, seaRocks, jitter,
+  GRASS_Y, LEAF, type ThemePack, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot, innerSpot,
+  lampPosts, scatter, coniferAt, alongShore, shrubAt, seaRocks,
 } from './common';
+import { decorateNow } from '../props';
 
 /** 森林：卵石滩、茂密的针叶林、古树广场、瞭望塔、林间池塘 */
 export const forest: ThemePack = {
@@ -43,34 +44,51 @@ export const forest: ThemePack = {
   plaza(ctx) {
     const { K, mats, raw } = ctx;
     plazaBase(ctx);
+    // 古树脚下的土壤（生几何：算广场铺装的一部分，不随摆设动）
+    const soil = K.mesh(new THREE.CylinderGeometry(1.9, 1.9, .08, 32), mats.moss, false);
+    soil.position.y = GRASS_Y + .1; raw.add(soil);
+  },
+
+  props(ctx, place) {
+    place('fountain', 0, 0, { params: { water: 'fountain' } });
+    plazaBenches(place, false);
     // 古树：一圈石头围着一棵大树
     seedFromString('old-tree:' + ctx.region.seed);
     for (let i = 0; i < 12; i++) {
       const a = i / 12 * Math.PI * 2, s = rr(.28, .42);
-      const m = K.mesh(new THREE.DodecahedronGeometry(s, 0), mats.boulder);
-      m.position.set(Math.cos(a) * 2.1, GRASS_Y + .1 + s * .4, Math.sin(a) * 2.1); m.scale.y = .7; m.rotation.set(rr(0, 3), rr(0, 3), 0);
-      raw.add(m);
+      const rx = rr(0, 3), ry = rr(0, 3);
+      place('boulder', Math.cos(a) * 2.1, Math.sin(a) * 2.1, { params: { mat: 'boulder', s, y: .1 + s * .4, sy: .7, rx, ry } });
     }
-    const soil = K.mesh(new THREE.CylinderGeometry(1.9, 1.9, .08, 32), mats.moss, false); soil.position.y = GRASS_Y + .1; raw.add(soil);
-    leafyTree(ctx, 0, 0, 7.4, 2);
-    plazaBenches(ctx, false);
-  },
-
-  decorate(ctx) {
-    const { K, mats } = ctx;
+    place('tree', 0, 0, { rot: rand() * Math.PI * 2, params: { h: 7.4, variant: 2 } });
     const t = edgeSpot(ctx, -35, 3.2, 3.5);
-    if (t) watchtower(ctx, t.x, t.z);
+    if (t) {
+      // 塔的朝向自己一条种子（以前是接着前面的随机流抽的，改主题后不能这么依赖）
+      seedFromString('watchtower:' + ctx.region.seed);
+      place('watchtower', t.x, t.z, { rot: rand() * Math.PI });
+    }
     const pond = innerSpot(ctx, 4.2, 'pond');
-    if (pond) makePond(ctx, pond.x, pond.z);
-    lampPosts(ctx, 6);
-    const leaves = [K.M.leaf, K.M.leafDark, K.M.leafOlive];
+    if (pond) {
+      seedFromString('pond:' + ctx.region.seed);
+      const r = rr(2.6, 3.4);
+      // 池塘半径是随机的，阻挡半径也跟着 r 变，所以显式给
+      place('pond', pond.x, pond.z, { params: { r, blockers: [{ r: r + 1.2 }] } });
+      seedFromString('pond-reeds:' + ctx.region.seed);
+      for (let i = 0; i < 10; i++) {
+        const a = rr(-.8, .8) + Math.PI * .75, d = r * rr(.9, 1.05), h = rr(.6, 1.1);
+        place('reed', pond.x + Math.cos(a) * d, pond.z + Math.sin(a) * d * .78, { params: { h } });
+      }
+    }
+    lampPosts(ctx, place, 6);
+    const LEAVES = [LEAF.leaf, LEAF.leafDark, LEAF.leafOlive];
     scatter(ctx, {
       key: 'forest', spacing: 3.6, max: 280, pad: 1.8, keep: c => .64 + c * .18,
       place: (x, z) => {
         const k = rand();
-        if (k < .56) conifer(ctx, x, z, rr(3.2, 5.4));
-        else if (k < .86) leafyTree(ctx, x, z, rr(2.8, 4.4), rand() < .5 ? 0 : 2);
-        else shrub(ctx, x, z, rr(.35, .55), [leaves[1], leaves[2]]);
+        if (k < .56) coniferAt(place, x, z, rr(3.2, 5.4));
+        else if (k < .86) {
+          const h = rr(2.8, 4.4), variant = rand() < .5 ? 0 : 2, rot = rand() * Math.PI * 2;
+          place('tree', x, z, { rot, params: { h, variant } });
+        } else shrubAt(place, x, z, rr(.35, .55), LEAVES[1], LEAVES[2]);
       },
     });
     // 倒下的原木
@@ -78,74 +96,19 @@ export const forest: ThemePack = {
     for (let i = 0; i < 3; i++) {
       const s = innerSpot(ctx, 1.6, 'log' + i);
       if (!s) continue;
-      const log = K.mesh(new THREE.CylinderGeometry(.22, .26, 2.6, 10), K.M.bark);
-      log.rotation.set(0, rr(0, 3), Math.PI / 2); log.position.set(s.x, GRASS_Y + .22, s.z);
-      ctx.raw.add(log);
-      ctx.blockers.push({ x: s.x, z: s.z, r: 1.6 });
+      place('log', s.x, s.z, { rot: rr(0, 3) });
     }
     alongShore(ctx, 'boulders', 3.4, [.4, 1.2], (x, z, i) => {
       if (rand() < .35) return;
       const s = rr(.35, .8);
-      const m = K.mesh(new THREE.DodecahedronGeometry(s, 0), mats.boulder);
-      m.position.set(x, GRASS_Y + s * .25, z); m.scale.y = .65; m.rotation.set(rr(0, 3), rr(0, 3), 0);
-      ctx.raw.add(m);
-      if (i % 3 === 0) shrub(ctx, x + .8, z + .3, rr(.3, .45), [K.M.leafDark, K.M.leaf]);
+      const rx = rr(0, 3), ry = rr(0, 3);
+      place('boulder', x, z, { params: { mat: 'boulder', s, y: s * .25, sy: .65, rx, ry } });
+      if (i % 3 === 0) shrubAt(place, x + .8, z + .3, rr(.3, .45), LEAF.leafDark, LEAF.leaf);
     });
-    seaRocks(ctx, 12, mats.boulder);
+    seaRocks(ctx, place, 12, 'boulder');
+  },
+
+  decorate(ctx) {
+    decorateNow(forest, ctx);
   },
 };
-
-/** 瞭望塔：四根木柱 + 斜撑 + 顶部小屋 + 四坡顶 */
-function watchtower(ctx: ThemeCtx, x: number, z: number) {
-  const { K, mats } = ctx;
-  const g = new THREE.Group();
-  const H = 5.6, s = 1.05;
-  for (const [dx, dz] of [[-s, -s], [s, -s], [-s, s], [s, s]]) {
-    const leg = K.mesh(new THREE.CylinderGeometry(.1, .14, H, 8), mats.woodDark);
-    leg.position.set(dx, H / 2, dz); g.add(leg);
-  }
-  for (const y of [1.6, 3.4]) {
-    for (const [ax, az, len, rot] of [[0, -s, s * 2, 0], [0, s, s * 2, 0], [-s, 0, s * 2, Math.PI / 2], [s, 0, s * 2, Math.PI / 2]] as [number, number, number, number][]) {
-      const b = K.mesh(new THREE.BoxGeometry(len, .1, .1), mats.wood); b.position.set(ax, y, az); b.rotation.y = rot; g.add(b);
-    }
-  }
-  const deck = K.mesh(new THREE.BoxGeometry(3, .16, 3), mats.wood); deck.position.y = H; g.add(deck);
-  const cabin = K.mesh(new THREE.BoxGeometry(2.4, 1.3, 2.4), mats.wood); cabin.position.y = H + .8; g.add(cabin);
-  for (const [dx, dz, w, d] of [[0, 1.21, 1.3, .02], [0, -1.21, 1.3, .02], [1.21, 0, .02, 1.3], [-1.21, 0, .02, 1.3]]) {
-    const win = K.mesh(new THREE.BoxGeometry(w, .55, d), mats.dark, false); win.position.set(dx, H + 1, dz); g.add(win);
-  }
-  const roof = K.mesh(new THREE.ConeGeometry(2.3, 1.3, 4), mats.red); roof.rotation.y = Math.PI / 4; roof.position.y = H + 2.1; g.add(roof);
-  const ladder = K.mesh(new THREE.BoxGeometry(.5, H, .06), mats.woodDark); ladder.position.set(0, H / 2, s + .25); ladder.rotation.x = -.12; g.add(ladder);
-  g.position.set(x, GRASS_Y, z);
-  g.rotation.y = rand() * Math.PI;
-  ctx.raw.add(g);
-  ctx.blockers.push({ x, z, r: 3 });
-  ctx.landmarks.push({ kind: 'watchtower', x, z, angle: 0 });
-}
-
-/** 林间池塘：水面 + 卵石岸 + 睡莲 + 芦苇 */
-function makePond(ctx: ThemeCtx, x: number, z: number) {
-  const { K, mats } = ctx;
-  seedFromString('pond:' + ctx.region.seed);
-  const r = rr(2.6, 3.4);
-  const water = K.mesh(new THREE.CylinderGeometry(r, r, .06, 40), mats.pond, false);
-  water.position.set(x, GRASS_Y + .01, z); water.scale.z = .75; ctx.raw.add(water);
-  for (let i = 0; i < 16; i++) {
-    const a = i / 16 * Math.PI * 2, s = rr(.18, .32);
-    const m = K.mesh(jitter(new THREE.DodecahedronGeometry(s, 0), .04), mats.pebble);
-    m.position.set(x + Math.cos(a) * r * 1.03, GRASS_Y + .06, z + Math.sin(a) * r * .78); m.scale.y = .55;
-    ctx.raw.add(m);
-  }
-  for (let i = 0; i < 6; i++) {
-    const a = rr(0, Math.PI * 2), d = rr(.3, .75) * r;
-    const pad = K.mesh(new THREE.CylinderGeometry(rr(.22, .34), rr(.22, .34), .02, 12, 1, false, .3, Math.PI * 1.8), mats.lily, false);
-    pad.position.set(x + Math.cos(a) * d, GRASS_Y + .05, z + Math.sin(a) * d * .75); ctx.raw.add(pad);
-  }
-  for (let i = 0; i < 10; i++) {
-    const a = rr(-.8, .8) + Math.PI * .75, d = r * rr(.9, 1.05);
-    const reed = K.mesh(new THREE.ConeGeometry(.03, rr(.6, 1.1), 4), K.M.leafOlive);
-    reed.position.set(x + Math.cos(a) * d, GRASS_Y + .4, z + Math.sin(a) * d * .78); ctx.raw.add(reed);
-  }
-  ctx.blockers.push({ x, z, r: r + 1.2 });
-  ctx.landmarks.push({ kind: 'pond', x, z, angle: 0 });
-}

@@ -4,7 +4,7 @@ import { forest } from './forest';
 import { snow } from './snow';
 import { sky } from './sky';
 
-export type { ThemePack, ThemeCtx, Landmark } from './common';
+export type { ThemePack, ThemeCtx, Landmark, PropPlace } from './common';
 
 /** 所有场景主题（选择器按这个顺序显示） */
 export const THEMES: ThemePack[] = [island, forest, snow, sky];

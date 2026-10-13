@@ -3,6 +3,7 @@ export { materializeDecor, DECOR } from './decor';
 export type { HostAdapter, Prefs, ContentPart, ChatMessage, AiAdapter } from './host';
 export { PalaceView, type PalaceViewOptions } from './view';
 export * from './world';
+export { propKind, propKinds, buildProp, bakeRegionProps, registerProp, decorateNow, type PropKind } from './props';
 export { TEMPLATES, createFromTemplate, type PalaceTemplate } from './templates/basic';
 export { THEMES, getTheme, type ThemePack } from './themes';
 export { createHomePalace } from './templates/home';

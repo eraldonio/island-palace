@@ -13,9 +13,10 @@ import { html } from './dom';
 import { buildRoof } from './roof';
 import { THEMES, getTheme, type ThemePack } from './themes';
 import { commonMats, GRASS_Y, WATER_Y, type Landmark, type Mats, type ThemeCtx } from './themes/common';
+import { bakeRegionProps, buildProp, registerProp } from './props';
 import {
   PLAZA_R, bboxOf, frontDoor, indoorRects, palaceColor, palaceLot, palaceStats, placedLot, rectCenter, regionExtent, regionOrigin, rotateVec, toRegion,
-  type PalaceWorld, type PlacedPalace, type WorldRegion,
+  type PalaceWorld, type PlacedPalace, type PlacedProp, type WorldRegion,
 } from './world';
 
 /* =====================================================================
@@ -53,6 +54,37 @@ export interface Shell {
   lot: Rect;
 }
 
+/** 射线打中的摆设；point 是世界坐标（和 pick() 的 point 同一套），是拾取盒上的命中点不是网格表面 */
+export interface PropHit {
+  regionId: string;
+  propId: string;
+  point: THREE.Vector3;
+}
+
+/** 一个摆设的拾取信息 */
+interface PropEntry {
+  /** build() 造出来的那一帧里的包围盒（相对草地、没有朝向；根节点自己的抬高已经算在里面） */
+  local: THREE.Box3;
+  /** 区域局部坐标的包围盒（拾取用，和画面上看到的一致） */
+  box: THREE.Box3;
+  /** 根节点自带的抬高（长椅坐在铺装上 6cm、热气球在天上 4m）：落位时 y = GRASS_Y + lift */
+  lift: number;
+  /** 脱离批次的个体（选中时才有）；并进合批结果的是 null */
+  obj: THREE.Object3D | null;
+}
+
+/** 地形参数快照（刚建好地形、还没跑装饰的那一份）：重建摆设 / 烘焙时照它造一个干净的 ctx */
+interface TerrainBase {
+  R(a: number): number;
+  center: Vec2;
+  maxR: number;
+  lots: Rect[];
+  roads: RoadNet | null;
+  seaY: number;
+  blockers: { x: number; z: number; r: number }[];
+  landmarks: Landmark[];
+}
+
 // =====================================================================
 // 一座岛
 // =====================================================================
@@ -69,7 +101,19 @@ export class RegionLayer {
   roads: RoadNet | null = null;
   landmarks: Landmark[] = [];
   readonly tag: CSS2DObject;
+  /** 摆设的拾取信息（id → 包围盒 / 个体），区域局部坐标；没烘焙过的岛是空的 */
+  private readonly propBoxes = new Map<string, PropEntry>();
   private radial: ((a: number) => number) | null = null;
+  /** 选中的摆设：脱离批次单独渲染（能高亮、能拖） */
+  private selected: string | null = null;
+  /** 合批后的装饰批次（广场铺装 + 摆设） */
+  private decor: THREE.Group | null = null;
+  /** 选中的那个摆设的个体（脱离批次，挂在 land 下） */
+  private selRoot: THREE.Group | null = null;
+  /** 地形参数快照：重建摆设 / 烘焙时不用再跑一遍地形 */
+  private terrain: TerrainBase | null = null;
+  /** 当前的夜间点亮系数（view.applyNight 给每盏灯乘的那个值）：重建出来的新灯要照它点亮 */
+  private night = 0;
 
   constructor(public region: WorldRegion, private W: WorldLayer) {
     this.theme = getTheme(region.theme);
@@ -136,10 +180,11 @@ export class RegionLayer {
     for (let i = 0; i < 64; i++) maxR = Math.max(maxR, R(i / 64 * Math.PI * 2));
     this.maxR = maxR;
 
-    const raw = new THREE.Group();
+    // 地形自己一个批次：主题直接塞进 raw 的东西（浮空岛的石笋）跟着它，重建摆设时就不用重跑地形
+    const landRaw = new THREE.Group();
     const ctx: ThemeCtx = {
       K, catalog: this.W.catalog, region, mats: this.W.mats(this.theme.id),
-      land: this.land, raw, seaY: WATER_Y - this.lift, R, center: this.center, maxR, lots, roads: null,
+      land: this.land, raw: landRaw, seaY: WATER_Y - this.lift, R, center: this.center, maxR, lots, roads: null,
       blockers: [{ x: 0, z: 0, r: PLAZA_R + 2.5 }], landmarks: [{ kind: 'plaza', x: 0, z: 0, angle: 0 }],
     };
     this.theme.terrain(ctx);
@@ -163,15 +208,142 @@ export class RegionLayer {
       lots, plaza: { x: 0, z: 0, r: PLAZA_R }, sources,
     });
     this.buildRoads(ctx);
+
+    // 记下地形参数和「还没跑装饰」的阻挡 / 地标（摆放会读它们）：重建摆设 / 烘焙照这份造干净的 ctx
+    this.terrain = {
+      R, center: this.center, maxR, lots, roads: ctx.roads, seaY: ctx.seaY,
+      blockers: ctx.blockers.map(b => ({ ...b })), landmarks: ctx.landmarks.map(l => ({ ...l })),
+    };
+
+    if (landRaw.children.length) this.addBatch(landRaw, 'land-decor');
+    this.rebuildDecor();
+    this.tag.position.set(cx, 9, cz);
+  }
+
+  // =====================================================================
+  // 装饰 / 摆设
+  // =====================================================================
+
+  /**
+   * 重建装饰批次：广场铺装 + 岛上的摆设。
+   * 烘焙过的岛（region.props 存在）按数据建，地标 / 阻挡也按存盘的顺序重放（道路要避开灯塔）；
+   * 没烘焙的岛走主题的 decorate（和以前一模一样）。两条路只走一条。
+   * 选中的那个摆设不进批次，单独放在 selRoot 里，所以能高亮、能拖。
+   */
+  rebuildDecor() {
+    const ctx = this.decorCtx();
+    if (!ctx) return;
+    const data = this.region.props;
+    // 选中的摆设可能已经被删掉了
+    if (data === undefined || !data.some(p => p.id === this.selected)) this.selected = null;
+    this.dropDecor();
+    this.propBoxes.clear();
+    if (this.selected) {
+      const sel = this.selRoot = new THREE.Group();
+      sel.name = 'prop-sel';
+      this.land.add(sel);
+    }
     this.theme.plaza(ctx);
-    this.theme.decorate(ctx);
+    if (data === undefined) this.theme.decorate(ctx);
+    else this.placeProps(ctx, data);
+    this.landmarks = ctx.landmarks;
+    this.addBatch(ctx.raw, 'decor');
+    this.lightUpNew();
+  }
+
+  /** 按数据摆出这一批摆设（原点和朝向由摆放方设置，几何见 props.ts） */
+  private placeProps(ctx: ThemeCtx, list: PlacedProp[]) {
+    for (const p of list) {
+      const obj = buildProp(ctx, p);
+      // 地标 / 阻挡必须按存盘的顺序重放：后面的摆放会读它们
+      registerProp(ctx, p);
+      if (!obj) continue;
+      obj.updateMatrixWorld(true); // 还没进场景树：world 矩阵就是它自己的局部矩阵
+      const local = new THREE.Box3().setFromObject(obj);
+      const lift = obj.position.y; // build() 的根节点抬高（相对草地），落位时不能丢
+      // 位置 / 朝向必须和 props.ts 里 placer 那条路一模一样（烘焙前后才看不出差别）
+      obj.position.set(p.pos[0], GRASS_Y + lift, p.pos[1]);
+      if (p.rot) obj.rotation.y = p.rot;
+      const box = local.clone().applyMatrix4(propMatrix(p.pos, p.rot ?? 0));
+      const detached = p.id === this.selected;
+      this.propBoxes.set(p.id, { local, box, lift, obj: detached ? obj : null });
+      (detached && this.selRoot ? this.selRoot : ctx.raw).add(obj);
+    }
+  }
+
+  /**
+   * 把现在这套程序化装饰冻成数据（region.props）：跑的是同一份摆放代码、同一份地形参数，
+   * 所以摆出来的位置和岛上现在看到的一模一样，只记录不建几何。
+   * 已经烘焙过就什么都不做（幂等，也不会覆盖用户改过的摆放）。
+   */
+  bake(): boolean {
+    const region = this.region;
+    if (region.props !== undefined) return false;
+    const ctx = this.decorCtx();
+    if (!ctx) return false;
+    region.props = bakeRegionProps(region, ctx);
+    // 立刻改走数据那条路：看起来一样，但摆设从此能单独拾取 / 移动
+    this.rebuildDecor();
+    return true;
+  }
+
+  /** 摆设用的干净 ctx：地形参数照旧，raw 是新的空组，地标 / 阻挡回到刚建好地形时的状态 */
+  private decorCtx(): ThemeCtx | null {
+    const t = this.terrain;
+    if (!t) return null;
+    return {
+      K: this.W.K, catalog: this.W.catalog, region: this.region, mats: this.W.mats(this.theme.id),
+      land: this.land, raw: new THREE.Group(), seaY: t.seaY, R: t.R, center: t.center, maxR: t.maxR, lots: t.lots, roads: t.roads,
+      blockers: t.blockers.map(b => ({ ...b })), landmarks: t.landmarks.map(l => ({ ...l })),
+    };
+  }
+
+  /** 丢掉上一批装饰（合批结果 + 脱离批次的个体）：几何、灯光登记一起清干净 */
+  private dropDecor() {
+    if (!this.decor && !this.selRoot) return;
+    this.captureNight();
+    for (const root of [this.decor, this.selRoot]) {
+      if (!root) continue;
+      this.unregisterLights(root);
+      disposeTree(root);
+      root.removeFromParent();
+    }
+    this.decor = this.selRoot = null;
+  }
+
+  /** 按材质合批后挂到 land 上（绘制调用保持和以前一样少）；点光源会被搬到合批结果里 */
+  private addBatch(raw: THREE.Group, name: string) {
     raw.updateMatrixWorld(true);
     const merged = mergeStatic(raw);
     disposeTree(raw);
-    merged.name = 'decor';
+    merged.name = name;
     this.land.add(merged);
-    this.landmarks = ctx.landmarks;
-    this.tag.position.set(cx, 9, cz);
+  }
+
+  /** 从 Kit 的灯光登记表里摘掉一棵子树里的点光源（重建 / 清理都要做，不然 LAMPS 越积越多） */
+  private unregisterLights(root: THREE.Object3D) {
+    const lamps = this.W.K.LAMPS;
+    for (const light of pointLights(root)) {
+      const i = lamps.findIndex(e => e.l === light);
+      if (i >= 0) lamps.splice(i, 1);
+    }
+  }
+
+  /** 记下当前的夜间点亮系数（摘掉旧灯之前读；新的灯要照它点亮，不然选中一下就全黑了） */
+  private captureNight() {
+    let n = -1;
+    for (const e of this.W.K.LAMPS) if (e.intensity > 0) n = Math.max(n, e.l.intensity / e.intensity);
+    if (n >= 0) this.night = n;
+  }
+
+  /** 这座岛新造出来的灯按当前夜间系数点亮（白天是 0，什么都不做） */
+  private lightUpNew() {
+    if (this.night <= 0) return;
+    const lamps = this.W.K.LAMPS;
+    for (const light of pointLights(this.land)) {
+      const e = lamps.find(x => x.l === light);
+      if (e) light.intensity = e.intensity * this.night;
+    }
   }
 
   private buildRoads(ctx: ThemeCtx) {
@@ -204,15 +376,13 @@ export class RegionLayer {
   }
 
   private clearLand() {
-    const lamps = this.W.K.LAMPS;
-    this.land.traverse((o: any) => {
-      if (o.isPointLight) {
-        const i = lamps.findIndex(l => l.l === o);
-        if (i >= 0) lamps.splice(i, 1);
-      }
-    });
+    this.captureNight(); // 灯摘掉之前先记下点亮系数
+    this.unregisterLights(this.land);
     disposeTree(this.land);
     this.land.clear();
+    this.decor = null;
+    this.selRoot = null;
+    this.propBoxes.clear();
   }
 
   /** 群岛视角的岛名牌 */
@@ -222,6 +392,52 @@ export class RegionLayer {
     el.replaceChildren(html`<em></em><span><b></b><small>${t('{n} 座宫殿', { n: palaces.length })}</small></span>`);
     el.querySelector('em').textContent = this.theme.icon;
     el.querySelector('b').textContent = r.name;
+  }
+
+  // =====================================================================
+  // 摆设：拾取 / 选中
+  // =====================================================================
+
+  /** 区域局部坐标的一条射线打中的最近摆设（离镜头最近的那个）；逐个 AABB 求交，不用重建任何东西 */
+  pickProp(ray: THREE.Ray): { propId: string; point: THREE.Vector3 } | null {
+    let out: { propId: string; point: THREE.Vector3 } | null = null;
+    let best = Infinity;
+    const p = new THREE.Vector3();
+    for (const [propId, e] of this.propBoxes) {
+      if (!ray.intersectBox(e.box, p)) continue;
+      const d = ray.origin.distanceToSquared(p);
+      if (d >= best) continue;
+      best = d;
+      out = { propId, point: p.clone() };
+    }
+    return out;
+  }
+
+  /** 选中 / 取消选中：选中的那个脱离批次单独渲染（能高亮、能拖）；换选中要重建那一批，拖动中不用 */
+  selectProp(propId: string | null) {
+    const id = propId !== null && this.propBoxes.has(propId) ? propId : null;
+    if (id === this.selected) return;
+    this.selected = id;
+    if (this.terrain) this.rebuildDecor();
+  }
+
+  /** 拖动中的每帧变换：只动脱离批次的个体（不重建批次），拾取盒跟着走 */
+  moveProp(propId: string, pos: Vec2, rot: number) {
+    if (this.selected !== propId) {
+      if (!this.propBoxes.has(propId)) return; // 不是这座岛的 / 还没烘焙
+      this.selectProp(propId); // 调用方没先选中：这一帧把它脱离出来（只重建这一次）
+    }
+    const e = this.propBoxes.get(propId);
+    if (!e?.obj) return;
+    e.obj.position.set(pos[0], GRASS_Y + e.lift, pos[1]);
+    e.obj.rotation.y = rot;
+    e.box.copy(e.local).applyMatrix4(propMatrix(pos, rot));
+  }
+
+  /** 摆设的世界包围盒（挂标记 / 命中反馈用）；没有这个摆设就返回 null */
+  boxOf(propId: string): THREE.Box3 | null {
+    const e = this.propBoxes.get(propId);
+    return e ? e.box.clone().applyMatrix4(this.group.matrixWorld) : null;
   }
 
   dispose() {
@@ -242,6 +458,8 @@ export class WorldLayer {
   /** 所有岛的外包盒（世界坐标） */
   bounds = new THREE.Box3();
   far = false;
+  /** 悬停中的摆设（只记状态：悬停不重建批次，反馈由调用方用 propBox 画） */
+  hoveredProp: string | null = null;
   private ocean: THREE.Mesh;
   private oceanMat: THREE.MeshStandardMaterial;
   private common: Mats;
@@ -568,6 +786,73 @@ export class WorldLayer {
   }
 
   // =====================================================================
+  // 岛上的摆设
+  // =====================================================================
+
+  /**
+   * 射线打中的最近摆设。
+   * 先按岛预筛：隐藏的岛、射线连岛的范围都打不到的岛直接跳过（bounds 是外接圆，海里的礁石 / 浮冰也算）。
+   * 平面模式下把射线搬进这座岛的局部坐标逐个 AABB 求交；
+   * 星球模式下地面是弯的、射线打不直，就先 unbendRay 求地面落点，再从落点垂直往下打（远看时够用）。
+   * 每次指针移动都会调用：每座岛一次求交 + 一次矩阵求逆，命中的那座岛最多几百个 AABB 测试。
+   */
+  pickProp(ray: THREE.Raycaster): PropHit | null {
+    const bent = BEND.k.value > 0;
+    let best: PropHit | null = null;
+    let bestD = Infinity;
+    for (const layer of this.regions.values()) {
+      if (!layer.group.visible) continue;
+      const g = this.groundOf(ray, layer);
+      if (!g || Math.hypot(g[0] - layer.center[0], g[1] - layer.center[1]) > layer.outerR) continue;
+      const mw = layer.group.matrixWorld;
+      const local = bent
+        ? new THREE.Ray(new THREE.Vector3(g[0], GRASS_Y + 60, g[1]), new THREE.Vector3(0, -1, 0))
+        : ray.ray.clone().applyMatrix4(mw.clone().invert());
+      const hit = layer.pickProp(local);
+      if (!hit) continue;
+      const d = local.origin.distanceToSquared(hit.point);
+      if (d >= bestD) continue;
+      bestD = d;
+      best = { regionId: layer.region.id, propId: hit.propId, point: hit.point.applyMatrix4(mw) };
+    }
+    return best;
+  }
+
+  /** 悬停反馈：只记状态，不动几何（悬停不重建批次，反馈由调用方画） */
+  setPropHover(propId: string | null) {
+    this.hoveredProp = propId;
+  }
+
+  /** 选中 / 取消选中一个摆设：选中的那个脱离批次单独渲染（能高亮、能拖） */
+  setPropSelection(propId: string | null) {
+    for (const layer of this.regions.values()) layer.selectProp(propId);
+  }
+
+  /** 拖动中的每帧变换（只动脱离批次的个体，不重建批次） */
+  movePropPreview(regionId: string, propId: string, pos: Vec2, rot: number) {
+    this.regions.get(regionId)?.moveProp(propId, pos, rot);
+  }
+
+  /** 摆设的数据变了（加 / 删 / 改参数）：重建那一批 */
+  rebuildProps(regionId: string) {
+    this.regions.get(regionId)?.rebuildDecor();
+  }
+
+  /** 摆设的世界包围盒（挂标记 / 命中反馈用） */
+  propBox(regionId: string, propId: string): THREE.Box3 | null {
+    return this.regions.get(regionId)?.boxOf(propId) ?? null;
+  }
+
+  /**
+   * 把一座岛现在的程序化装饰冻成数据（region.props），摆出来的位置和岛上现在看到的一模一样。
+   * 幂等：已经烘焙过的岛直接返回 false（不会覆盖用户改过的摆放）。
+   * 返回 true 表示新建了数据，调用方要存盘。
+   */
+  bakeProps(regionId: string): boolean {
+    return this.regions.get(regionId)?.bake() ?? false;
+  }
+
+  // =====================================================================
   // 动画 / 灯光
   // =====================================================================
 
@@ -664,6 +949,22 @@ function sailboat(K: Kit, m: Mats, x: number, z: number, rot: number) {
 // =====================================================================
 // 小工具
 // =====================================================================
+
+/**
+ * 摆设的摆放矩阵：先绕 y 转 rot、再放到 (x, GRASS_Y, z)。
+ * 必须和「obj.position.set(x, GRASS_Y, z) + obj.rotation.y = rot」完全一致，
+ * 拾取盒和拖动时都用它从原点处的包围盒算出区域局部坐标的包围盒。
+ */
+function propMatrix(pos: Vec2, rot: number) {
+  return new THREE.Matrix4().makeRotationY(rot).setPosition(pos[0], GRASS_Y, pos[1]);
+}
+
+/** 一棵子树里的点光源（灯光登记表的登记 / 摘除都按这个来） */
+function pointLights(root: THREE.Object3D): THREE.PointLight[] {
+  const out: THREE.PointLight[] = [];
+  root.traverse(o => { if (o instanceof THREE.PointLight) out.push(o); });
+  return out;
+}
 
 /**
  * 岛的轮廓：以所有地块（和广场）角点的「支撑函数」为基础外扩，再叠加低频噪声。

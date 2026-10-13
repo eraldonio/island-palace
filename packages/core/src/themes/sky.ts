@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { rand, rr, seedFromString } from '../random';
 import {
-  GRASS_Y, type ThemePack, type ThemeCtx, outline, extrudeLand, addLand, plazaBase, plazaBenches, fountain, edgeSpot,
-  lampPosts, scatter, leafyTree, alongShore, shrub, jitter,
+  GRASS_Y, LEAF, type ThemePack, type ThemeCtx, type PropPlace, outline, extrudeLand, addLand, plazaBase, plazaBenches, edgeSpot,
+  lampPosts, scatter, alongShore, shrubAt, jitter,
 } from './common';
+import { decorateNow } from '../props';
 
 /** 浮空岛：整座岛悬在海面上方，岛底是倒垂的岩体，边缘有瀑布，四周飘着云；地标是风车和热气球 */
 export const sky: ThemePack = {
@@ -46,35 +47,47 @@ export const sky: ThemePack = {
 
   plaza(ctx) {
     plazaBase(ctx);
-    fountain(ctx, ctx.mats.fountain);
-    plazaBenches(ctx);
   },
 
-  decorate(ctx) {
-    const { K, mats } = ctx;
+  props(ctx, place) {
+    const LEAVES = [LEAF.leafLight, LEAF.leaf, LEAF.leafOlive];
+    const FLOWERS = ['blossom', 'mustard', 'rose'];
+    place('fountain', 0, 0, { params: { water: 'fountain' } });
+    plazaBenches(place);
     const w = edgeSpot(ctx, -30, 3, 3.5);
-    if (w) windmill(ctx, w.x, w.z);
+    if (w) place('windmill', w.x, w.z, { rot: Math.PI / 4 });
     const f = edgeSpot(ctx, 70, .2, 3);
-    if (f) waterfall(ctx, f.a);
-    lampPosts(ctx, 6);
-    const leaves = [K.M.leafLight, K.M.leaf, K.M.leafOlive];
+    if (f) {
+      // 瀑布挂在崖边：地标在崖口，小溪和水潭朝岛内伸 len 米（阻挡也跟着走）
+      const r = ctx.R(f.a), ux = Math.cos(f.a), uz = Math.sin(f.a), len = 8;
+      place('waterfall', ctx.center[0] + ux * r, ctx.center[1] + uz * r, {
+        params: { angle: f.a, len, blockers: [{ dx: -ux * len / 2, dz: -uz * len / 2, r: 2 }, { dx: -ux * len, dz: -uz * len, r: 2.5 }] },
+      });
+    }
+    lampPosts(ctx, place, 6);
     scatter(ctx, {
       key: 'sky-tree', spacing: 4.4, max: 150, pad: 2, keep: c => .45 + c * .22,
       place: (x, z) => {
         const k = rand();
-        if (k < .55) leafyTree(ctx, x, z, rr(2.4, 3.6), 1);
-        else if (k < .82) blossomTree(ctx, x, z, rr(2.2, 3.2));
-        else shrub(ctx, x, z, rr(.35, .55), [leaves[0], leaves[2]]);
+        if (k < .55) {
+          const h = rr(2.4, 3.6), rot = rand() * Math.PI * 2;
+          place('tree', x, z, { rot, params: { h, variant: 1 } });
+        } else if (k < .82) place('blossom-tree', x, z, { params: { h: rr(2.2, 3.2) } });
+        else shrubAt(place, x, z, rr(.35, .55), LEAVES[0], LEAVES[2]);
       },
     });
-    const flowers = [mats.blossom, K.M.mustard, K.M.rose];
     alongShore(ctx, 'flowers', 3.8, [.8, 1.6], (x, z, i) => {
       if (rand() < .35) return;
-      shrub(ctx, x, z, rr(.3, .5), [leaves[i % 3], leaves[(i + 1) % 3]]);
-      if (rand() < .6) K.ball(ctx.raw, .1, flowers[i % 3], x + .15, GRASS_Y + .5, z + .1, [1, 1, 1], 10);
+      const s = rr(.3, .5);
+      shrubAt(place, x, z, s, LEAVES[i % 3], LEAVES[(i + 1) % 3]);
+      if (rand() < .6) place('flower', x + .15, z + .1, { params: { color: FLOWERS[i % 3], h: .5 } });
     });
-    clouds(ctx);
-    balloon(ctx);
+    clouds(ctx, place);
+    balloon(ctx, place);
+  },
+
+  decorate(ctx) {
+    decorateNow(sky, ctx);
   },
 };
 
@@ -111,7 +124,7 @@ function undersideGeometry(ctx: ThemeCtx) {
   return g;
 }
 
-/** 岛底倒垂的石笋：中间一根大的，边缘一圈小的，越靠外越短 */
+/** 岛底倒垂的石笋：中间一根大的，边缘一圈小的，越靠外越短（生几何：是岛体的一部分） */
 function hangingRocks(ctx: ThemeCtx) {
   const { K, mats } = ctx, [cx, cz] = ctx.center;
   seedFromString('spikes:' + ctx.region.seed);
@@ -134,99 +147,22 @@ function hangingRocks(ctx: ThemeCtx) {
   }
 }
 
-function windmill(ctx: ThemeCtx, x: number, z: number) {
-  const { K, mats } = ctx;
-  const g = new THREE.Group();
-  const tower = K.mesh(new THREE.CylinderGeometry(.85, 1.45, 5.6, 8), mats.white); tower.position.y = 2.8; g.add(tower);
-  const cap = K.mesh(new THREE.ConeGeometry(1.15, 1.3, 8), mats.red); cap.position.y = 6.25; g.add(cap);
-  const door = K.mesh(new THREE.BoxGeometry(.7, 1.2, .1), mats.woodDark, false); door.position.set(0, .6, 1.38); door.rotation.x = -.1; g.add(door);
-  const hub = new THREE.Group(); hub.position.set(0, 5.3, 1.05); g.add(hub);
-  const axle = K.mesh(new THREE.CylinderGeometry(.14, .14, .5, 10), mats.dark); axle.rotation.x = Math.PI / 2; hub.add(axle);
-  for (let i = 0; i < 4; i++) {
-    const arm = new THREE.Group(); arm.rotation.z = i * Math.PI / 2 + .3; hub.add(arm);
-    const spar = K.mesh(new THREE.BoxGeometry(.1, 3.2, .06), mats.woodDark); spar.position.y = 1.6; arm.add(spar);
-    const sail = K.mesh(new THREE.BoxGeometry(.7, 2.4, .03), mats.hull); sail.position.set(.4, 1.9, .03); arm.add(sail);
-  }
-  g.position.set(x, GRASS_Y, z);
-  // 叶片朝向镜头所在的东南方
-  g.rotation.y = Math.PI / 4;
-  ctx.raw.add(g);
-  ctx.blockers.push({ x, z, r: 3 });
-  ctx.landmarks.push({ kind: 'windmill', x, z, angle: 0 });
-}
-
-/** 小溪流到岛边，瀑布一直落进海里，底部一团水雾 */
-function waterfall(ctx: ThemeCtx, a: number) {
-  const { K, mats } = ctx;
+/** 云：岛下方一圈，远处（画面上方）几朵略高。先把每团云的位置算完再摆（云的 build 会用随机流团云块） */
+function clouds(ctx: ThemeCtx, place: PropPlace) {
   const [cx, cz] = ctx.center;
-  const r = ctx.R(a), ux = Math.cos(a), uz = Math.sin(a);
-  const len = 8, rot = Math.atan2(ux, uz);
-  const sx = cx + ux * (r - len / 2), sz = cz + uz * (r - len / 2);
-  const stream = K.mesh(new THREE.BoxGeometry(1.3, .05, len + .8), mats.stream, false);
-  stream.position.set(sx, GRASS_Y + .02, sz); stream.rotation.y = rot; ctx.raw.add(stream);
-  const pondR = 1.5;
-  const pond = K.mesh(new THREE.CylinderGeometry(pondR, pondR, .05, 24), mats.stream, false);
-  pond.position.set(cx + ux * (r - len), GRASS_Y + .02, cz + uz * (r - len)); ctx.raw.add(pond);
-  const drop = GRASS_Y - ctx.seaY;
-  for (const [w, off] of [[1.5, .7], [1.0, .9]] as [number, number][]) {
-    const fall = new THREE.Mesh(new THREE.PlaneGeometry(w, drop), mats.fall);
-    fall.position.set(cx + ux * (r + off), GRASS_Y - drop / 2, cz + uz * (r + off));
-    fall.rotation.y = rot + Math.PI / 2;
-    fall.renderOrder = 2;
-    ctx.raw.add(fall);
-  }
-  for (let i = 0; i < 7; i++) {
-    const m = K.mesh(new THREE.IcosahedronGeometry(rr(.6, 1.2), 1), mats.cloud, false);
-    m.position.set(cx + ux * (r + 1) + rr(-1.2, 1.2), ctx.seaY + rr(.2, .9), cz + uz * (r + 1) + rr(-1.2, 1.2));
-    ctx.raw.add(m);
-  }
-  ctx.blockers.push({ x: sx, z: sz, r: 2 }, { x: cx + ux * (r - len), z: cz + uz * (r - len), r: pondR + 1 });
-  ctx.landmarks.push({ kind: 'waterfall', x: cx + ux * r, z: cz + uz * r, angle: a });
-}
-
-function blossomTree(ctx: ThemeCtx, x: number, z: number, h: number) {
-  const { K, mats } = ctx;
-  const g = new THREE.Group();
-  const trunk = K.mesh(new THREE.CylinderGeometry(.07, .12, h * .55, 8), K.M.bark); trunk.position.y = h * .27; g.add(trunk);
-  for (let i = 0; i < 7; i++) {
-    const a = rand() * Math.PI * 2, d = rr(0, h * .2), s = rr(h * .13, h * .2);
-    const c = K.mesh(new THREE.IcosahedronGeometry(s, 1), i % 3 ? mats.blossom : K.M.rose);
-    c.position.set(Math.cos(a) * d, rr(h * .55, h * .85), Math.sin(a) * d); g.add(c);
-  }
-  g.position.set(x, GRASS_Y, z);
-  ctx.raw.add(g);
-}
-
-/** 云：岛下方一圈，远处（画面上方）几朵略高 */
-function clouds(ctx: ThemeCtx) {
-  const { K, mats } = ctx, [cx, cz] = ctx.center;
   seedFromString('clouds:' + ctx.region.seed);
+  const list: { x: number; z: number; y: number; n: number }[] = [];
   for (let i = 0; i < 11; i++) {
     const a = i / 11 * Math.PI * 2 + rr(-.2, .2);
     const back = Math.sin(a + Math.PI / 4) < -.3; // 远离镜头的一侧
     const r = ctx.R(a) + rr(3, 12), y = back ? rr(-1, 2.5) : rr(-9, -4);
-    const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
-    const n = 3 + Math.floor(rand() * 3);
-    for (let k = 0; k < n; k++) {
-      const s = rr(1.1, 2.2);
-      const m = K.mesh(new THREE.IcosahedronGeometry(s, 1), mats.cloud, false);
-      m.position.set(x + rr(-2, 2), y + rr(-.3, .5), z + rr(-1.4, 1.4)); m.scale.y = .62;
-      ctx.raw.add(m);
-    }
+    list.push({ x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, y, n: 3 + Math.floor(rand() * 3) });
   }
+  for (const c of list) place('cloud', c.x, c.z, { params: { y: c.y, n: c.n } });
 }
 
-function balloon(ctx: ThemeCtx) {
-  const { K, mats } = ctx, [cx, cz] = ctx.center;
+/** 热气球：固定在岛的东南角外边，4 米高 */
+function balloon(ctx: ThemeCtx, place: PropPlace) {
   const a = 150 * Math.PI / 180, r = ctx.R(a) + 5;
-  const g = new THREE.Group();
-  const env = K.mesh(new THREE.SphereGeometry(1.7, 20, 14), mats.balloon); env.scale.y = 1.18; env.position.y = 3.2; g.add(env);
-  const band = K.mesh(new THREE.TorusGeometry(1.66, .12, 8, 28), mats.balloonBand); band.rotation.x = Math.PI / 2; band.position.y = 3.1; g.add(band);
-  const neck = K.mesh(new THREE.ConeGeometry(.7, .9, 14), mats.balloon); neck.rotation.x = Math.PI; neck.position.y = 1.35; g.add(neck);
-  const basket = K.mesh(new THREE.BoxGeometry(.7, .5, .7), mats.wood); basket.position.y = .25; g.add(basket);
-  for (const [dx, dz] of [[-.3, -.3], [.3, -.3], [-.3, .3], [.3, .3]]) {
-    const rope = K.mesh(new THREE.CylinderGeometry(.015, .015, 1.1, 4), mats.dark, false); rope.position.set(dx, .95, dz); g.add(rope);
-  }
-  g.position.set(cx + Math.cos(a) * r, 4, cz + Math.sin(a) * r);
-  ctx.raw.add(g);
+  place('balloon', ctx.center[0] + Math.cos(a) * r, ctx.center[1] + Math.sin(a) * r);
 }

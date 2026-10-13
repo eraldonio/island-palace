@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as W from '../src/world';
 import { createFromTemplate } from '../src/templates/basic';
-import type { PalaceDoc } from '../src/schema';
+import type { PalaceDoc, Rect, Vec2 } from '../src/schema';
 
 function docsMap(...docs: PalaceDoc[]) {
   return new Map(docs.map(d => [d.id, d]));
@@ -56,5 +56,111 @@ describe('世界：摆放', () => {
     expect(out.id).toBe(raw.id);
     expect(out.name).toBe(raw.name);
     expect(out.regions.length).toBe(1);
+  });
+});
+
+describe('世界：岛上的摆设', () => {
+  const base = () => {
+    const w = W.createWorld();
+    w.regions = [{ id: 'r', name: '岛', theme: 'island', seed: 7, origin: [0, 0], palaces: [] }];
+    return w;
+  };
+
+  it('props 原样读写：顺序、位置、参数、朝向都保留', () => {
+    const w = base();
+    w.regions[0].props = [
+      { id: 'a', kind: 'tree', pos: [1.25, -3], rot: 90, params: { h: 3, seed: 42 } },
+      { id: 'b', kind: 'bench', pos: [2, 4] },
+    ];
+    const out = W.normalizeWorld(w);
+    const props = out.regions[0].props!;
+    expect(props.map(p => p.id)).toEqual(['a', 'b']);
+    expect(props[0].pos).toEqual([1.25, -3]);
+    expect(props[0].rot).toBe(90);
+    expect(props[0].params).toEqual({ h: 3, seed: 42 });
+    expect(props[1].rot).toBeUndefined();
+  });
+
+  it('坏掉的摆设条目被丢掉，其余保留', () => {
+    const raw: unknown = {
+      ...base(),
+      regions: [{
+        id: 'r', name: '岛', theme: 'island', seed: 7, origin: [0, 0], palaces: [],
+        props: [
+          { id: 'ok', kind: 'tree', pos: [1, 2] },
+          { kind: '', pos: [1, 2] },          // kind 空
+          { kind: 'tree' },                    // 没有 pos
+          { kind: 'tree', pos: ['x', 2] },     // pos 不是数
+          { kind: 'tree', pos: [NaN, 2] },     // pos 非有限
+          { kind: 'tree', pos: [Infinity, 2] },
+          'nope', null, [1, 2],                // 根本不是对象
+          { id: 'ok2', kind: 'stone', pos: [3, 4], rot: 'x', params: [1, 2] },
+        ],
+      }],
+    };
+    const out = W.normalizeWorld(raw);
+    const props = out.regions[0].props!;
+    expect(props.map(p => p.id)).toEqual(['ok', 'ok2']);
+    expect(props[1].rot).toBeUndefined();    // rot 不是数就丢掉
+    expect(props[1].params).toBeUndefined(); // params 不是普通对象就丢掉
+  });
+
+  it('props 不是数组 = 没烘焙：字段整个没有', () => {
+    const raw: unknown = { ...base(), regions: [{ id: 'r', name: '岛', theme: 'island', seed: 7, origin: [0, 0], palaces: [], props: 'nope' }] };
+    const out = W.normalizeWorld(raw);
+    expect('props' in out.regions[0]).toBe(false);
+    expect(W.propsOf(out.regions[0])).toEqual([]);
+  });
+
+  it('没有 props 的旧世界文件规范化后仍然没有 props（不是空数组）', () => {
+    const out = W.normalizeWorld({ ...base(), version: 1 });
+    expect('props' in out.regions[0]).toBe(false);
+    expect(out.version).toBe(W.WORLD_VERSION);
+    expect(out.compat).toBe(W.WORLD_COMPAT);
+  });
+
+  it('烘焙过但岛上没有摆设：空数组保留下来', () => {
+    const w = base();
+    w.regions[0].props = [];
+    const out = W.normalizeWorld(w);
+    expect(out.regions[0].props).toEqual([]);
+  });
+
+  it('addProp / findProp / removeProp', () => {
+    const r: W.WorldRegion = { id: 'r', name: '岛', theme: 'island', seed: 1, palaces: [] };
+    expect('props' in r).toBe(false);        // 没烘焙，字段不存在
+    expect(W.propsOf(r)).toEqual([]);
+
+    const p = W.addProp(r, 'tree', [1.23456, 2.5], 45, { h: 3 });
+    expect(p.id.startsWith('prop-')).toBe(true);
+    expect(p.pos).toEqual([1.235, 2.5]);     // 位置取整到 3 位
+    expect(p.rot).toBe(45);
+    expect(p.params!.h).toBe(3);
+    expect(typeof p.params!.seed).toBe('number');
+
+    expect(W.findProp(r, p.id)).toBe(p);
+    expect(W.findProp(r, 'nope')).toBeNull();
+    expect(W.removeProp(r, 'nope')).toBe(false);   // 不认识的 id
+    expect(W.removeProp(r, p.id)).toBe(true);
+    expect(W.findProp(r, p.id)).toBeNull();
+    expect(W.propsOf(r)).toEqual([]);
+  });
+
+  it('propInLot 认边界', () => {
+    const lot: Rect = [-10, -10, 10, 10];
+    expect(W.propInLot({ id: 'a', kind: 'tree', pos: [10, 10] }, lot)).toBe(true);
+    expect(W.propInLot({ id: 'a', kind: 'tree', pos: [-10, 0] }, lot)).toBe(true);
+    expect(W.propInLot({ id: 'a', kind: 'tree', pos: [10.001, 0] }, lot)).toBe(false);
+  });
+
+  it('nudgePropOutOfLot 把摆设挪出地块（不压到新宫殿）', () => {
+    const lot: Rect = [-10, -10, 10, 10];
+    const spots: Vec2[] = [[0, 0], [9.9, -9.9], [-9, 5]];
+    for (const pos of spots) {
+      const p: W.PlacedProp = { id: 'p', kind: 'tree', pos };
+      W.nudgePropOutOfLot(p, lot);
+      expect(W.propInLot(p, lot)).toBe(false);
+      expect(Number.isFinite(p.pos[0]) && Number.isFinite(p.pos[1])).toBe(true);
+    }
   });
 });

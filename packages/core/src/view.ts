@@ -57,6 +57,7 @@ const READONLY_BLOCK: Record<string, true> = {
   edit: true, addItem: true, toolRoom: true, toolWall: true, buildPalace: true, townEdit: true, newIsland: true,
   palaceMove: true, palaceDelete: true, palaceColor: true, palaceRoof: true, regionTheme: true, regionDelete: true,
   regionSettings: true, pickTemplate: true, pickTheme: true, shelfEdit: true,
+  propPanel: true, pickProp: true, propRotate: true, propDuplicate: true, propDelete: true,
 };
 
 type Mode = 'iso' | 'walk';

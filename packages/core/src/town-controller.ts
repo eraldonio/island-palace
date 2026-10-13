@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import type { PalaceView } from './view';
 import { type PalaceDoc, type Vec2 } from './schema';
-import type { RegionLayer } from './world-layer';
+import type { PropHit, RegionLayer } from './world-layer';
+import type { ParamSpec } from './catalog';
+import { propKind, propKinds, type PropKind } from './props';
+import { ThumbnailRenderer } from './thumbs';
 import { ICONS, escapeHtml, timeAgo } from './icons';
 import { html, rich } from './dom';
 import { TEMPLATES, createFromTemplate } from './templates/basic';
@@ -12,38 +15,54 @@ import { t } from './i18n';
 /* =====================================================================
  * 小镇 / 群岛层级的交互
  *   近看一座岛：悬停掀屋顶、选中宫殿、布置（拖动 / 旋转宫殿）、建造新宫殿、搬到别的岛
+ *              布置里也能动岛上的摆设（props）：选中、拖动、旋转、复制、删除、改参数，还能从面板里加
  *   群岛视角：悬停 / 选中岛、双击飞过去、岛屿设置（名字 / 场景）、开辟新岛、布置岛屿
  *   两个层级都能用：宫殿列表（按岛分组）、⌘K 快速跳转（宫殿 / 岛）
  * ===================================================================== */
 
 const GRASS_Y = -.15;
 const PEEK_DELAY = 280;
+/** 摆设之间的最小间距 / 和宫殿地块、广场的额外退让 */
+const PROP_GAP = .6;
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
 
 interface PaletteItem { kind: 'palace' | 'region'; id: string; title: string; sub: string; color: string }
 type Drag =
   | { kind: 'palace'; id: string; regionId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
-  | { kind: 'region'; id: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean };
+  | { kind: 'region'; id: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
+  | { kind: 'prop'; regionId: string; propId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean };
+
+/** 正在往岛上放的新摆设：先按数据加进去（预览就是真的那条数据），取消时再撤回 */
+interface PropPlacing { prop: W.PlacedProp; regionId: string; before: string; valid: boolean; down: { x: number; y: number } | null }
 
 export class TownController {
   selectedId: string | null = null;
   hoveredId: string | null = null;
   selectedRegion: string | null = null;
   hoveredRegion: string | null = null;
+  /** 选中的岛上摆设（和宫殿互斥） */
+  selectedProp: string | null = null;
   editing = false;
+  private hoveredProp: string | null = null;
   private hoverSince = 0;
   private tagHover: string | null = null;
   private drag: Drag | null = null;
   private placing: { doc: PalaceDoc; placed: W.PlacedPalace; regionId: string; valid: boolean; down: { x: number; y: number } | null } | null = null;
+  private propPlacing: PropPlacing | null = null;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private listOpen = false;
-  private panel: 'build' | 'island' | null = null;
+  private panel: 'build' | 'island' | 'props' | null = null;
   private palette: PaletteItem[] = [];
   private paletteSel = 0;
   private confirmResolve: ((ok: boolean) => void) | null = null;
   private planCache = new Map<string, DocumentFragment>();
+  /** 摆设面板的缩略图（第一次打开面板时才建） */
+  private propThumbs: ThumbnailRenderer | null = null;
+  /** 参数编辑开始时的快照（滑杆拖动期间只重建预览，松手才记一步撤销） */
+  private propParamBefore: string | null = null;
+  private propRaf = 0;
 
   constructor(private v: PalaceView) {
     this.buildUI();
@@ -97,7 +116,7 @@ export class TownController {
   private get docs() { return this.v.docs; }
   private get world() { return this.v.world; }
   /** 拖动 / 放置进行中：镜头所在的岛不要自动切换 */
-  get busy() { return !!this.drag || !!this.placing; }
+  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing; }
 
   private layerOf(regionId: string): RegionLayer | undefined { return this.town.regions.get(regionId); }
   private regionById(id: string) { return this.world.regions.find(r => r.id === id); }
@@ -125,7 +144,7 @@ export class TownController {
       </div>
       <nav class="kp-bar kp-glass kp-town-only kp-town-view kp-near-only">
         <button class="kp-primary" data-act="buildPalace" title="${t('在这座岛上建造一座新宫殿')}">${rich(ICONS.plus)}<span>${t('建造宫殿')}</span></button>
-        <button data-act="townEdit" title="${t('布置小镇：拖动宫殿换位置、旋转（B）')}">${rich(ICONS.move)}<span>${t('布置')}</span></button>
+        <button data-act="townEdit" title="${t('布置小镇：拖动宫殿和摆设换位置、旋转（B）')}">${rich(ICONS.move)}<span>${t('布置')}</span></button>
         <span class="kp-sep"></span>
         <button data-act="toWorld" title="${t('拉远，看看所有的岛')}">${rich(ICONS.globe)}<span>${t('群岛')}</span></button>
         <button class="kp-icon" data-act="rotl" title="${t('向左旋转 90°（Q）')}">${rich(ICONS.rotl)}</button>
@@ -146,7 +165,8 @@ export class TownController {
       </nav>
       <nav class="kp-bar kp-glass kp-town-only kp-town-edit">
         <span class="kp-bar-hint" data-ref="townEditHint"></span>
-        <button class="kp-icon kp-near-only" data-act="townRotate" title="${t('旋转选中的宫殿 90°（R）')}">${rich(ICONS.rotr)}</button>
+        <button class="kp-icon kp-near-only" data-act="propPanel" title="${t('添加摆设（A）')}">${rich(ICONS.plus)}</button>
+        <button class="kp-icon kp-near-only" data-act="townRotate" title="${t('旋转选中的宫殿或摆设 90°（R）')}">${rich(ICONS.rotr)}</button>
         <span class="kp-sep"></span>
         <button class="kp-icon" data-act="townUndo" data-ref="townUndo" title="${t('撤销（⌘Z）')}" disabled>${rich(ICONS.undo)}</button>
         <button class="kp-icon" data-act="townRedo" data-ref="townRedo" title="${t('重做（⇧⌘Z）')}" disabled>${rich(ICONS.redo)}</button>
@@ -157,6 +177,7 @@ export class TownController {
       <div class="kp-card kp-glass kp-hidden kp-town-only" data-ref="townCard"></div>
       <div class="kp-panel kp-build kp-glass kp-hidden kp-town-only" data-ref="buildPanel"></div>
       <div class="kp-panel kp-list kp-glass kp-hidden kp-town-only" data-ref="townList"></div>
+      <div class="kp-panel kp-list kp-glass kp-hidden kp-town-only" data-ref="propPanel"></div>
       <div class="kp-overlay kp-hidden" data-ref="paletteWrap">
         <div class="kp-palette kp-glass">
           <label class="kp-pal-input">${rich(ICONS.search)}<input data-ref="paletteInput" placeholder="${t('搜索宫殿或岛…')}" autocomplete="off" spellcheck="false"></label>
@@ -203,7 +224,8 @@ export class TownController {
     }
     if (this.selectedId && !this.docs.has(this.selectedId)) this.selectedId = null;
     if (this.selectedRegion && !this.regionById(this.selectedRegion)) this.selectedRegion = null;
-    v.ui.townEditHint.replaceChildren(html`${v.far ? t('拖动岛换位置 · 岛和岛之间会留出海面') : rich(t('拖动宫殿换位置 · <b>R</b> 旋转'))}`);
+    if (this.selectedProp && !this.propAt(this.selectedProp)) this.selectProp(null);
+    v.ui.townEditHint.replaceChildren(html`${v.far ? t('拖动岛换位置 · 岛和岛之间会留出海面') : rich(t('拖动宫殿或摆设换位置 · <b>R</b> 旋转 · <b>⌘D</b> 复制'))}`);
     this.renderCard();
     if (this.listOpen) this.renderList();
     this.updateUndoButtons();
@@ -275,6 +297,29 @@ export class TownController {
     return this.town.pickRegion(this.ray(e));
   }
 
+  /**
+   * 摆设 / 宫殿一起拾取：谁离镜头近就选谁；深度接近（20cm 以内）时宫殿优先，
+   * 所以摆设不会抢走宫殿的点击，宫殿也不会被脚下更近的摆设挡住。地面落点排在两者之后。
+   */
+  private pickPropOrPalace(e: { clientX: number; clientY: number }): { prop: PropHit | null; palaceId: string | null } {
+    const ray = this.ray(e);
+    const prop = this.town.pickProp(ray);
+    const shell = this.town.pick(ray);
+    const dProp = prop ? ray.ray.origin.distanceTo(prop.point) : Infinity;
+    const dShell = shell ? ray.ray.origin.distanceTo(shell.point) : Infinity;
+    if (shell && dShell <= dProp + .2) return { prop: null, palaceId: shell.id };
+    return { prop, palaceId: null };
+  }
+
+  /** 摆设和它所在的岛（找不到返回 null：撤销之后 id 可能已经没了） */
+  private propAt(propId: string) {
+    for (const region of this.world.regions) {
+      const prop = W.findProp(region, propId);
+      if (prop) return { region, prop };
+    }
+    return null;
+  }
+
   // =====================================================================
   // 悬停 / 选中
   // =====================================================================
@@ -285,13 +330,27 @@ export class TownController {
     const e = v.lastPointer;
     if (e && !v.camTween) {
       v.lastPointer = null;
-      if (!e.buttons && !this.drag && !this.placing) {
-        if (v.far) this.setRegionHover(this.pickRegion(e));
-        else this.setHover(this.pickPalace(e) ?? this.tagHover);
+      if (!e.buttons && !this.drag && !this.placing && !this.propPlacing) {
+        if (v.far) {
+          this.setRegionHover(this.pickRegion(e));
+          this.setPropHover(null);
+        } else if (this.editing) {
+          // 布置中镜头飘到另一座岛：先把它的装饰烘焙成数据，那边的摆设才能拾取（样子不变）
+          const layer = this.layerOf(this.region.id);
+          const g = layer && this.town.groundOf(this.ray(e), layer);
+          if (this.region.props === undefined && g && layer.onLand(g[0], g[1])) this.ensureProps(this.region);
+          // 摆设优先于地面，深度上仍让给更近的宫殿
+          const hit = this.pickPropOrPalace(e);
+          this.setPropHover(hit.prop?.propId ?? null);
+          this.setHover(hit.palaceId ?? this.tagHover);
+        } else {
+          this.setPropHover(null);
+          this.setHover(this.pickPalace(e) ?? this.tagHover);
+        }
         this.showTip(e);
       } else v.ui.tip.classList.remove('kp-on');
     }
-    const busy = v.far || this.editing || !!this.placing || !!this.drag || !!v.camTween;
+    const busy = v.far || this.editing || !!this.placing || !!this.propPlacing || !!this.drag || !!v.camTween;
     const target = busy ? null : (this.hoveredId ?? this.selectedId);
     const ready = this.hoveredId ? performance.now() - this.hoverSince > PEEK_DELAY : true;
     if (target && ready && !(v.peek?.id === target && v.peek.open)) v.openPeek(target);
@@ -322,9 +381,19 @@ export class TownController {
     this.v.setCursor(id ? 'pointer' : '');
   }
 
+  /** 布置模式下悬停的摆设：只做高亮，不重建批次（见 world-layer 的 setPropHover） */
+  private setPropHover(id: string | null) {
+    if (id === this.hoveredProp) return;
+    this.hoveredProp = id;
+    this.town.setPropHover(id);
+    if (id) this.v.setCursor('pointer');
+    else if (!this.hoveredId) this.v.setCursor('');
+  }
+
   onPointerLeave() {
     if (!this.tagHover) this.setHover(null);
     this.setRegionHover(null);
+    this.setPropHover(null);
     this.v.ui.tip.classList.remove('kp-on');
   }
 
@@ -338,6 +407,13 @@ export class TownController {
       v.placeTip(e);
       return;
     }
+    const at = this.hoveredProp && this.propAt(this.hoveredProp);
+    if (at) {
+      const kind = propKind(at.prop.kind);
+      tip.replaceChildren(html`${kind ? t(kind.name) : at.prop.kind}<small>${t('拖动换位置 · R 旋转')}</small>`);
+      v.placeTip(e);
+      return;
+    }
     const doc = this.hoveredId && !this.tagHover ? this.docs.get(this.hoveredId) : null;
     if (!doc) { tip.classList.remove('kp-on'); return; }
     tip.replaceChildren(html`${doc.name}<small>${this.editing ? t('拖动换位置 · R 旋转') : t('双击进入 · 单击查看')}</small>`);
@@ -345,6 +421,13 @@ export class TownController {
   }
 
   select(id: string | null) {
+    // 宫殿和摆设的选中互斥：选了宫殿就把摆设放下
+    if (id && (this.selectedProp || this.hoveredProp)) {
+      this.selectedProp = null;
+      this.hoveredProp = null;
+      this.town.setPropSelection(null);
+      this.town.setPropHover(null);
+    }
     const old = this.selectedId;
     this.selectedId = id;
     if (old) this.town.shells.get(old)?.tag.element.classList.remove('kp-sel');
@@ -353,6 +436,18 @@ export class TownController {
     this.updateMarker();
     this.renderCard();
     this.v.ui.townList.querySelectorAll('.kp-list-row[data-id]').forEach(r => r.classList.toggle('kp-on', (r as HTMLElement).dataset.id === id));
+  }
+
+  /** 选中岛上的一个摆设（和宫殿的选中互斥）；渲染层会把它从批次里拆出来单独渲染 */
+  selectProp(id: string | null) {
+    if (id !== this.selectedProp) this.propParamBefore = null;
+    // 添加面板和卡片互斥：在岛上点中一个摆设就把面板收起来，卡片才有地方显示
+    if (id && this.panel === 'props') this.closePanel();
+    this.selectedProp = id;
+    this.town.setPropSelection(id);
+    if (id) this.select(null);
+    else { this.renderCard(); this.updateMarker(); }
+    this.v.invalidate();
   }
 
   selectRegion(id: string | null) {
@@ -366,6 +461,7 @@ export class TownController {
   private updateMarker(valid = true) {
     const v = this.v;
     if (v.level !== 'town') return;
+    if (this.selectedProp) { this.propMarker(this.selectedProp, valid); return; }
     const id = this.placing?.doc.id || (v.far ? null : this.selectedId);
     const s = id ? this.town.shells.get(id) : null;
     const layer = s && this.layerOf(s.regionId);
@@ -375,14 +471,27 @@ export class TownController {
     v.setMarker(box, layer.lift + GRASS_Y + .07, .05, valid ? '#ef8235' : '#d9483b');
   }
 
+  /** 选中 / 拖动中的摆设：渲染层给的包围盒已经是世界坐标，直接铺在地面上 */
+  private propMarker(propId: string, valid: boolean) {
+    const v = this.v;
+    const at = this.propAt(propId);
+    const layer = at ? this.layerOf(at.region.id) : undefined;
+    const box = at && layer ? this.town.propBox(at.region.id, propId) : null;
+    if (!at || !layer || !box) { v.setMarker(null); return; }
+    v.setMarker(box, layer.lift + GRASS_Y + .07, .05, valid ? '#ef8235' : '#d9483b');
+  }
+
   onClick(e: PointerEvent) {
-    if (this.placing) return;
-    if (this.v.far) this.selectRegion(this.pickRegion(e));
+    if (this.placing || this.propPlacing) return;
+    if (this.v.far) { this.selectRegion(this.pickRegion(e)); return; }
+    if (!this.editing) { this.select(this.pickPalace(e)); return; }
+    const hit = this.pickPropOrPalace(e);
+    if (hit.prop) this.selectProp(hit.prop.propId);
     else this.select(this.pickPalace(e));
   }
 
   onDblClick(e: MouseEvent) {
-    if (this.editing || this.placing) return;
+    if (this.editing || this.placing || this.propPlacing) return;
     if (this.v.far) {
       const rid = this.pickRegion(e);
       if (rid) this.v.flyToRegion(rid);
@@ -393,12 +502,14 @@ export class TownController {
   }
 
   // =====================================================================
-  // 卡片：宫殿 / 岛
+  // 卡片：宫殿 / 岛 / 摆设
   // =====================================================================
 
   private renderCard() {
     const v = this.v, card = v.ui.townCard;
-    if (v.level !== 'town' || this.editing || this.placing) { card.classList.add('kp-hidden'); return; }
+    if (v.level !== 'town' || this.placing || this.propPlacing || this.panel === 'props') { card.classList.add('kp-hidden'); return; }
+    if (this.selectedProp) return this.renderPropCard();
+    if (this.editing) { card.classList.add('kp-hidden'); return; }
     if (this.selectedRegion) return this.renderRegionCard(this.selectedRegion);
     const id = this.selectedId;
     const doc = id && this.docs.get(id), placed = id && v.placementOf(id);
@@ -443,6 +554,25 @@ export class TownController {
     card.classList.remove('kp-hidden');
   }
 
+  private renderPropCard() {
+    const v = this.v, card = v.ui.townCard;
+    const at = this.selectedProp && this.propAt(this.selectedProp);
+    if (!at) { card.classList.add('kp-hidden'); return; }
+    const kind = propKind(at.prop.kind);
+    const specs = kind?.params || [];
+    card.replaceChildren(html`
+      <button class="kp-close" data-act="propDeselect">×</button>
+      <div class="kp-room">${kind ? t(kind.category) : ''} · ${t('摆设')}</div>
+      <h3>${kind ? t(kind.name) : at.prop.kind}</h3>
+      ${specs.length ? html`<div class="kp-params">${specs.map(spec => propParamField(spec, at.prop.params?.[spec.key] ?? spec.def))}</div>` : ''}
+      <div class="kp-row">
+        <button data-act="propRotate" title="${t('旋转 90°（R）')}">${rich(ICONS.rotr)} ${t('旋转')}</button>
+        <button data-act="propDuplicate" title="${t('复制一份（⌘D）')}">${t('复制')}</button>
+        <button class="kp-danger" data-act="propDelete" title="${t('删除这个摆设')}">${t('删除')}</button>
+      </div>`);
+    card.classList.remove('kp-hidden');
+  }
+
   private renderRegionCard(regionId: string) {
     const v = this.v, card = v.ui.townCard;
     const r = this.regionById(regionId);
@@ -474,6 +604,14 @@ export class TownController {
   onInput(e: Event, commit: boolean) {
     const el = e.target as HTMLInputElement;
     const field = el.dataset?.field;
+    const param = el.dataset?.param;
+    if (param && this.selectedProp) {
+      const at = this.propAt(this.selectedProp);
+      const spec = at && propKind(at.prop.kind)?.params?.find(p => p.key === param);
+      if (!spec) return;
+      this.setPropParam(param, spec.options ? spec.options[Number(el.value)]?.[0] : Number(el.value), !commit);
+      return;
+    }
     if (field === 'palaceName' && this.selectedId) {
       const doc = this.docs.get(this.selectedId), s = this.town.shells.get(this.selectedId);
       if (!doc) return;
@@ -506,9 +644,22 @@ export class TownController {
   // =====================================================================
 
   setEditing(on: boolean) {
-    if (on === this.editing) return;
     if (on && this.v.readonly) return;
-    if (on) { this.cancelPlacing(); this.closePanel(); this.toggleList(false); this.v.closePeek(); }
+    if (!on) {
+      // 离开「布置」：正在放的摆设撤掉，选中的 / 悬停的放下（不管当前是不是布置模式都收干净）
+      this.cancelPropPlacing();
+      this.selectProp(null);
+      this.setPropHover(null);
+    }
+    if (on === this.editing) return;
+    if (on) {
+      this.cancelPlacing();
+      this.closePanel();
+      this.toggleList(false);
+      this.v.closePeek();
+      // 第一次布置这座岛：把程序化生成的装饰烘焙成数据（样子不变，但从此可以编辑）
+      if (!this.v.far) this.ensureProps(this.region);
+    }
     this.editing = on;
     this.drag = null;
     this.v.root.classList.toggle('kp-town-editing', on);
@@ -518,7 +669,7 @@ export class TownController {
     this.v.invalidate();
   }
 
-  /** 可撤销的状态：所有岛（位置、名字、场景）和岛上宫殿的摆放 */
+  /** 可撤销的状态：所有岛（位置、名字、场景）、岛上宫殿的摆放、岛上的摆设（props 也在 regions 里） */
   private snapshot() {
     return JSON.stringify(this.world.regions);
   }
@@ -546,6 +697,11 @@ export class TownController {
     v.region = this.world.regions.find(r => r.id === cur) || this.world.regions[0];
     v.closePeek(true);
     this.selectedId = this.selectedRegion = null;
+    // 撤销 / 重做会把所有岛推倒重建：摆设的选中和悬停状态一并放下
+    this.selectedProp = null;
+    this.hoveredProp = null;
+    this.town.setPropSelection(null);
+    this.town.setPropHover(null);
     this.town.build(this.world, this.docs);
     this.town.setFar(v.far);
     v.settleRegions();
@@ -573,6 +729,11 @@ export class TownController {
   }
 
   private rotateSelected() {
+    // 摆设优先：正在放 / 正选着摆设时，R 转的是它
+    const placing = this.propPlacing;
+    const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+    if (placing) { this.rotateProp(placing.prop, placing.regionId); return; }
+    if (at) { this.rotateProp(at.prop, at.region.id); return; }
     const id = this.placing?.doc.id || this.selectedId;
     const s = id && this.town.shells.get(id);
     const region = s && this.regionById(s.regionId);
@@ -597,6 +758,236 @@ export class TownController {
     this.town.placeShell(s);
     this.commitPalaces(before, region.id);
     this.updateMarker();
+  }
+
+  // =====================================================================
+  // 布置：岛上的摆设（props）
+  // =====================================================================
+
+  /** 这座岛还没烘焙过摆设就先烘焙一次：跑的是同一份摆放代码，样子不变，但从此可以编辑 */
+  private ensureProps(region: W.WorldRegion): boolean {
+    if (region.props !== undefined) return true;
+    if (!this.town.bakeProps(region.id)) return false;
+    this.v.worldChanged();
+    return true;
+  }
+
+  /** 摆设的占地半径：地标用自己的阻挡半径，普通摆设给一个小的默认值 */
+  private propRadius(prop: W.PlacedProp) {
+    return propKind(prop.kind)?.blocker ?? .5;
+  }
+
+  /** 这个位置放不放得下：草地上、不压广场、不压宫殿地块、不和别的摆设挤在一起 */
+  private propFits(region: W.WorldRegion, layer: RegionLayer, prop: W.PlacedProp): boolean {
+    const [x, z] = prop.pos;
+    if (!layer.onLand(x, z, .4)) return false;
+    const r = this.propRadius(prop);
+    if (Math.hypot(x, z) < W.PLAZA_R + r + PROP_GAP) return false;
+    for (const placed of region.palaces) {
+      const doc = this.docs.get(placed.palaceId);
+      if (!doc) continue;
+      const [x0, z0, x1, z1] = W.placedLot(placed, doc);
+      if (x > x0 - r - PROP_GAP && x < x1 + r + PROP_GAP && z > z0 - r - PROP_GAP && z < z1 + r + PROP_GAP) return false;
+    }
+    for (const other of W.propsOf(region)) {
+      if (other === prop) continue;
+      const gap = Math.max(PROP_GAP, (r + this.propRadius(other)) * .5);
+      if (Math.hypot(other.pos[0] - x, other.pos[1] - z) < gap) return false;
+    }
+    return true;
+  }
+
+  /** 新摆设的落点：从镜头中心开始向外螺旋找第一块空地（找不到就先放在中心，用户可以再挪） */
+  private freePropSpot(region: W.WorldRegion, layer: RegionLayer, kind: PropKind, near: Vec2): Vec2 {
+    const probe: W.PlacedProp = { id: '', kind: kind.kind, pos: [near[0], near[1]] };
+    for (let i = 0; i < 64; i++) {
+      const a = i * 2.399, d = i ? 1.2 + i * .55 : 0;
+      probe.pos = [Math.round(near[0] + Math.cos(a) * d), Math.round(near[1] + Math.sin(a) * d)];
+      if (this.propFits(region, layer, probe)) return probe.pos;
+    }
+    return [Math.round(near[0]), Math.round(near[1])];
+  }
+
+  /** 从面板里挑了一个摆设：先按数据加进去（预览就是真数据），再点击空地放下 */
+  private startPropPlacing(kindId: string) {
+    const v = this.v, region = this.region, layer = this.layerOf(region.id);
+    const kind = propKind(kindId);
+    if (!kind || !layer || v.far || !this.ensureProps(region)) return;
+    // 和放宫殿一样：摆放期间先退出「布置」（底部只留摆放提示条），放完 / 取消再回到布置
+    this.setEditing(false);
+    this.closePanel();
+    const [ox, oz] = W.regionOrigin(region);
+    const pos = this.freePropSpot(region, layer, kind, [Math.round(v.orbit.target.x - ox), Math.round(v.orbit.target.z - oz)]);
+    const before = this.snapshot();
+    const prop = W.addProp(region, kindId, pos, 0);
+    this.town.rebuildProps(region.id);
+    this.propPlacing = { prop, regionId: region.id, before, valid: true, down: null };
+    this.selectProp(prop.id);
+    v.root.classList.add('kp-town-placing');
+    v.ui.townPlaceHint.replaceChildren(html`${rich(t('把「{name}」放到岛上：点击空地放下 · <b>R</b> 旋转 · <b>Esc</b> 取消', { name: escapeHtml(t(kind.name)) }))}`);
+    this.updateMarker(true);
+    v.invalidate();
+  }
+
+  /** 每帧：把新摆设挪到指针下的草地（只动预览，数据等放下时才算） */
+  private movePropPlacing(e: { clientX: number; clientY: number }) {
+    const p = this.propPlacing;
+    if (!p) return;
+    const g = this.regionGround(e, p.regionId);
+    const region = this.regionById(p.regionId), layer = this.layerOf(p.regionId);
+    if (!g || !region || !layer) return;
+    const pos: Vec2 = [Math.round(g[0]), Math.round(g[1])];
+    if (pos[0] === p.prop.pos[0] && pos[1] === p.prop.pos[1]) return;
+    p.prop.pos = pos;
+    this.town.movePropPreview(p.regionId, p.prop.id, pos, p.prop.rot || 0);
+    p.valid = this.propFits(region, layer, p.prop);
+    this.updateMarker(p.valid);
+    this.v.invalidate();
+  }
+
+  private commitPropPlacing() {
+    const p = this.propPlacing;
+    if (!p) return;
+    this.propPlacing = null;
+    this.v.root.classList.remove('kp-town-placing');
+    const region = this.regionById(p.regionId);
+    if (!p.valid || !region) {
+      if (region) W.removeProp(region, p.prop.id);
+      this.selectProp(null);
+      this.town.rebuildProps(p.regionId);
+      this.v.host.notify?.(t('这里放不下：离其他摆设、宫殿或广场太近了'));
+      this.setEditing(true);
+      return;
+    }
+    this.pushUndo(p.before);
+    this.v.worldChanged();
+    // 回到「布置」，新摆设保持选中（卡片会显示出来，可以接着改参数）
+    this.setEditing(true);
+  }
+
+  /** 只是把预览撤掉；要不要回到「布置」由调用方决定（见 startPropPlacing 的说明） */
+  private cancelPropPlacing() {
+    const p = this.propPlacing;
+    if (!p) return;
+    this.propPlacing = null;
+    this.v.root.classList.remove('kp-town-placing');
+    const region = this.regionById(p.regionId);
+    if (region) W.removeProp(region, p.prop.id);
+    this.selectProp(null);
+    this.town.rebuildProps(p.regionId);
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  /** 转 90°：正在放的时候只动预览，已经放好的记一步撤销 */
+  private rotateProp(prop: W.PlacedProp, regionId: string) {
+    // PlacedProp.rot 是弧度（和 rotation.y 一致），不是宫殿那种度数
+    prop.rot = (((prop.rot || 0) + Math.PI / 2) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    const placing = this.propPlacing;
+    if (placing) {
+      this.town.movePropPreview(regionId, prop.id, prop.pos, prop.rot);
+      const region = this.regionById(regionId), layer = this.layerOf(regionId);
+      if (region && layer) {
+        placing.valid = this.propFits(region, layer, prop);
+        this.updateMarker(placing.valid);
+      }
+      this.v.invalidate();
+      return;
+    }
+    const before = this.snapshot();
+    this.town.rebuildProps(regionId);
+    this.pushUndo(before);
+    this.v.worldChanged();
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  /** 复制选中的摆设：新的 id、新的随机种子，往旁边挪一点 */
+  private duplicateProp() {
+    const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+    if (!at) return;
+    const before = this.snapshot();
+    const copy = W.addProp(at.region, at.prop.kind, [at.prop.pos[0] + 1.2, at.prop.pos[1] + 1.2], at.prop.rot, at.prop.params);
+    this.town.rebuildProps(at.region.id);
+    this.selectProp(copy.id);
+    this.pushUndo(before);
+    this.v.worldChanged();
+    this.v.invalidate();
+  }
+
+  private deleteProp() {
+    const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+    if (!at) return;
+    const name = propKind(at.prop.kind)?.name || at.prop.kind;
+    const before = this.snapshot();
+    this.selectProp(null);
+    W.removeProp(at.region, at.prop.id);
+    this.town.rebuildProps(at.region.id);
+    this.pushUndo(before);
+    this.v.worldChanged();
+    this.v.host.notify?.(t('已删除「{name}」', { name: t(name) }));
+    this.v.invalidate();
+  }
+
+  /**
+   * 改摆设参数：live（滑杆拖动中）只重建几何，松手（change）才记一步撤销。
+   * params 整份摊开再改一个键，所以 seed / blockers / angle 这些内部字段原样保留，
+   * 树冠、浮冰棱角那类由种子定住的随机细节不会重掷。
+   */
+  private setPropParam(key: string, value: unknown, live: boolean) {
+    const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+    if (!at) return;
+    if (this.propParamBefore === null) this.propParamBefore = this.snapshot();
+    at.prop.params = { ...(at.prop.params || {}), [key]: value };
+    const regionId = at.region.id;
+    if (live) {
+      if (!this.propRaf) this.propRaf = window.requestAnimationFrame(() => {
+        this.propRaf = 0;
+        this.town.rebuildProps(regionId);
+        this.v.invalidate();
+      });
+      return;
+    }
+    if (this.propRaf) { cancelAnimationFrame(this.propRaf); this.propRaf = 0; }
+    this.town.rebuildProps(regionId);
+    const before = this.propParamBefore;
+    this.propParamBefore = null;
+    if (before !== null) this.pushUndo(before);
+    this.v.worldChanged();
+    this.v.invalidate();
+  }
+
+  /** 添加摆设面板：按 PropKind.category 分组，缩略图和物件目录一样逐帧离屏生成 */
+  private openPropPanel() {
+    const v = this.v;
+    if (v.far) { v.host.notify?.(t('先拉近到一座岛上再添加摆设')); return; }
+    if (!this.ensureProps(this.region)) return;
+    const thumbs = this.propThumbs ?? (this.propThumbs = new ThumbnailRenderer(v.renderer, v.kit, v.catalog, v.scene.environment));
+    this.closePanel();
+    this.selectProp(null);
+    const groups = new Map<string, PropKind[]>();
+    for (const kind of propKinds()) {
+      const list = groups.get(kind.category);
+      if (list) list.push(kind); else groups.set(kind.category, [kind]);
+    }
+    const panel = v.ui.propPanel;
+    panel.replaceChildren(html`
+      <div class="kp-panel-head"><b>${t('添加摆设')}</b><button class="kp-close" data-act="closePanel">×</button></div>
+      <div class="kp-list-body">${[...groups].map(([category, kinds]) => html`
+        <div class="kp-list-group"><b>${t(category)}</b></div>
+        <div class="kp-tiles">${kinds.map(kind => html`
+          <button class="kp-tile" data-act="pickProp" data-kind="${kind.kind}" title="${t(kind.name)}">
+            <span class="kp-thumb"><img alt="" data-prop="${kind.kind}"></span><span class="kp-tile-name">${t(kind.name)}</span>
+          </button>`)}</div>`)}</div>`);
+    this.panel = 'props';
+    panel.classList.remove('kp-hidden');
+    this.renderCard();
+    for (const kind of propKinds()) {
+      void thumbs.prop(kind).then(url => {
+        const img = panel.querySelector<HTMLImageElement>(`img[data-prop="${kind.kind}"]`);
+        if (img && url) { img.src = url; img.classList.add('kp-loaded'); }
+      });
+    }
   }
 
   /** 岛之间是否留够了海面 */
@@ -662,6 +1053,8 @@ export class TownController {
   private closePanel() {
     this.panel = null;
     this.v.ui.buildPanel.classList.add('kp-hidden');
+    this.v.ui.propPanel.classList.add('kp-hidden');
+    this.renderCard();
   }
 
   /** 模板的迷你平面图 */
@@ -987,6 +1380,7 @@ export class TownController {
   onPointerDown(e: PointerEvent): boolean {
     if (e.button !== 0) return false;
     if (this.placing) { this.placing.down = { x: e.clientX, y: e.clientY }; return false; }
+    if (this.propPlacing) { this.propPlacing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (!this.editing) return false;
     const v = this.v;
     if (v.far) {
@@ -999,18 +1393,30 @@ export class TownController {
       // groundOf 返回区域局部坐标：原点偏移就是 -g
       this.drag = { kind: 'region', id: rid, offset: [-g[0], -g[1]], orig: [...o] as Vec2, before: this.snapshot(), valid: true, moved: false };
     } else {
-      const id = this.pickPalace(e);
-      const s = id && this.town.shells.get(id);
-      const g = s && this.regionGround(e, s.regionId);
-      if (!s || !g) return false;
-      this.select(id);
-      this.drag = { kind: 'palace', id, regionId: s.regionId, offset: [s.placed.pos[0] - g[0], s.placed.pos[1] - g[1]], orig: [...s.placed.pos] as Vec2, before: this.snapshot(), valid: true, moved: false };
+      const hit = this.pickPropOrPalace(e);
+      const region = hit.prop && this.regionById(hit.prop.regionId);
+      const prop = hit.prop && region ? W.findProp(region, hit.prop.propId) : null;
+      const layer = region && this.layerOf(region.id);
+      const g = layer && this.town.groundOf(this.ray(e), layer);
+      if (prop && region && layer && g) {
+        // 摆设：指针下的那个更近，或者这一路上根本没有宫殿外壳
+        this.selectProp(prop.id);
+        this.drag = { kind: 'prop', regionId: region.id, propId: prop.id, offset: [prop.pos[0] - g[0], prop.pos[1] - g[1]], orig: [...prop.pos] as Vec2, before: this.snapshot(), valid: true, moved: false };
+      } else {
+        const id = this.pickPalace(e);
+        const s = id && this.town.shells.get(id);
+        const sg = s && this.regionGround(e, s.regionId);
+        if (!s || !sg) return false;
+        this.select(id);
+        this.drag = { kind: 'palace', id, regionId: s.regionId, offset: [s.placed.pos[0] - sg[0], s.placed.pos[1] - sg[1]], orig: [...s.placed.pos] as Vec2, before: this.snapshot(), valid: true, moved: false };
+      }
     }
     try { v.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* 合成事件 */ }
     return true;
   }
 
   onPointerMove(e: PointerEvent): boolean {
+    if (this.propPlacing && !e.buttons) { this.movePropPlacing(e); return true; }
     if (this.placing && !e.buttons) { this.movePlacing(e); return true; }
     const d = this.drag;
     if (!d) return false;
@@ -1031,6 +1437,23 @@ export class TownController {
       }
       return true;
     }
+    if (d.kind === 'prop') {
+      // 和宫殿一样的算法：地面点 + 按下时的偏移；只动预览，数据等松手再写
+      const region = this.regionById(d.regionId), layer = this.layerOf(d.regionId);
+      const prop = region && W.findProp(region, d.propId);
+      const pg = this.regionGround(e, d.regionId);
+      if (!prop || !region || !layer || !pg) return true;
+      const next: Vec2 = [Math.round(pg[0] + d.offset[0]), Math.round(pg[1] + d.offset[1])];
+      if (next[0] !== prop.pos[0] || next[1] !== prop.pos[1]) {
+        prop.pos = next;
+        this.town.movePropPreview(d.regionId, d.propId, next, prop.rot || 0);
+        d.valid = this.propFits(region, layer, prop);
+        d.moved = true;
+        this.updateMarker(d.valid);
+        this.v.invalidate();
+      }
+      return true;
+    }
     const g = this.regionGround(e, d.regionId), s = this.town.shells.get(d.id), region = this.regionById(d.regionId);
     if (!g || !s || !region) return true;
     const pos: Vec2 = [Math.round(g[0] + d.offset[0]), Math.round(g[1] + d.offset[1])];
@@ -1046,6 +1469,15 @@ export class TownController {
   }
 
   onPointerUp(e: PointerEvent): boolean {
+    const pp = this.propPlacing;
+    if (pp) {
+      const down = pp.down;
+      pp.down = null;
+      if (!down || e.button !== 0 || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return !!down;
+      this.movePropPlacing(e);
+      this.commitPropPlacing();
+      return true;
+    }
     const p = this.placing;
     if (p) {
       const down = p.down;
@@ -1072,6 +1504,24 @@ export class TownController {
           this.v.host.notify?.(t('离其他岛太近了，岛和岛之间要留出一片海'));
         }
       }
+      this.v.invalidate();
+      return true;
+    }
+    if (d.kind === 'prop') {
+      const region = this.regionById(d.regionId);
+      const prop = region && W.findProp(region, d.propId);
+      if (prop && region && d.moved) {
+        if (d.valid) {
+          // 预览已经就位（movePropPreview），这里只把新位置落进数据
+          this.pushUndo(d.before);
+          this.v.worldChanged();
+        } else {
+          prop.pos = d.orig;
+          this.town.movePropPreview(d.regionId, d.propId, d.orig, prop.rot || 0);
+          this.v.host.notify?.(t('这里放不下：离其他摆设、宫殿或广场太近了'));
+        }
+      }
+      this.updateMarker();
       this.v.invalidate();
       return true;
     }
@@ -1107,9 +1557,11 @@ export class TownController {
     const k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey;
     if (this.editing && mod && k === 'z') { if (e.shiftKey) this.redo(); else this.undo(); return true; }
     if (this.editing && mod && k === 'y') { this.redo(); return true; }
+    if (this.editing && mod && k === 'd' && !this.v.far && this.selectedProp) { this.duplicateProp(); return true; }
     if (mod) return false;
     if (k === 'escape') {
-      if (this.placing) this.cancelPlacing();
+      if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
+      else if (this.placing) this.cancelPlacing();
       else if (this.panel) this.closePanel();
       else if (this.editing) this.setEditing(false);
       else if (this.listOpen) this.toggleList(false);
@@ -1118,13 +1570,17 @@ export class TownController {
       else return false;
       return true;
     }
-    if (k === 'r' && !this.v.far && (this.editing || this.placing)) { this.rotateSelected(); return true; }
-    if (k === 'b' && !this.placing) { this.setEditing(!this.editing); return true; }
+    if (k === 'r' && !this.v.far && (this.editing || this.placing || this.propPlacing)) { this.rotateSelected(); return true; }
+    if (k === 'a' && this.editing && !this.v.far && !this.propPlacing) { this.openPropPanel(); return true; }
+    if (k === 'b' && !this.placing && !this.propPlacing) { this.setEditing(!this.editing); return true; }
     if (k === 'enter' && !this.editing) {
       if (this.v.far && this.selectedRegion) { this.v.flyToRegion(this.selectedRegion); return true; }
       if (!this.v.far && this.selectedId) { this.v.enterPalace(this.selectedId); return true; }
     }
-    if ((k === 'delete' || k === 'backspace') && this.editing && this.selectedId && !this.v.far) { void this.deletePalace(this.selectedId); return true; }
+    if ((k === 'delete' || k === 'backspace') && this.editing && !this.v.far) {
+      if (this.selectedProp) { this.deleteProp(); return true; }
+      if (this.selectedId) { void this.deletePalace(this.selectedId); return true; }
+    }
     return false;
   }
 
@@ -1148,13 +1604,21 @@ export class TownController {
       case 'closePanel': this.closePanel(); return true;
       case 'pickTemplate': this.startPlacing(el.dataset.tpl); return true;
       case 'pickTheme': this.createIsland(el.dataset.theme); return true;
-      case 'townPlaceCancel': this.cancelPlacing(); return true;
+      case 'townPlaceCancel':
+        if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); } else this.cancelPlacing();
+        return true;
       case 'townEdit': this.setEditing(true); return true;
       case 'townEditDone': this.setEditing(false); return true;
       case 'townRotate': this.rotateSelected(); return true;
       case 'townUndo': this.undo(); return true;
       case 'townRedo': this.redo(); return true;
       case 'townDeselect': this.select(null); return true;
+      case 'propPanel': this.openPropPanel(); return true;
+      case 'pickProp': this.startPropPlacing(el.dataset.kind); return true;
+      case 'propDeselect': this.selectProp(null); return true;
+      case 'propRotate': this.rotateSelected(); return true;
+      case 'propDuplicate': this.duplicateProp(); return true;
+      case 'propDelete': this.deleteProp(); return true;
       case 'regionDeselect': this.selectRegion(null); return true;
       case 'toWorld': this.select(null); v.flyToWorld(); return true;
       case 'toPlanet': this.select(null); this.selectRegion(null); v.flyToPlanet(); return true;
@@ -1230,5 +1694,24 @@ export class TownController {
   dispose() {
     this.confirmResolve?.(false);
     this.confirmResolve = null;
+    if (this.propRaf) cancelAnimationFrame(this.propRaf);
+    this.propRaf = 0;
+    this.propThumbs?.dispose();
+    this.propThumbs = null;
   }
+}
+
+/**
+ * 摆设参数的输入行：和 editor.ts 的 paramField 用同一套样式（实现各写各的，
+ * 免得小镇控制器去碰编辑器的内部）。摆设的参数只有「下拉」和「滑杆」两种。
+ */
+function propParamField(spec: ParamSpec, value: unknown) {
+  if (spec.options) {
+    const idx = Math.max(0, spec.options.findIndex(([v]) => v === value));
+    return html`<label class="kp-field"><span>${t(spec.label)}</span><select data-param="${spec.key}">${spec.options.map(([, label], i) => html`<option value="${i}"${i === idx ? ' selected' : ''}>${t(label)}</option>`)}</select></label>`;
+  }
+  const n = Number(value ?? spec.def ?? 0);
+  const step = spec.step ?? .1;
+  const shown = step >= 1 ? String(Math.round(n)) : `${n.toFixed(step < .05 ? 2 : 1)} m`;
+  return html`<label class="kp-field"><span>${t(spec.label)}</span><input type="range" data-param="${spec.key}" min="${spec.min}" max="${spec.max}" step="${step}" value="${n}"><output>${shown}</output></label>`;
 }

@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { rand, rr } from '../random';
 import {
-  GRASS_Y, type ThemePack, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, fountain, edgeSpot, lighthouse, pier,
-  lampPosts, scatter, leafyTree, alongShore, shrub, seaRocks,
+  GRASS_Y, LEAF, type ThemePack, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot,
+  lampPosts, scatter, alongShore, shrubAt, seaRocks,
 } from './common';
+import { decorateNow } from '../props';
 
 /** 海岛：沙滩、浅滩、灯塔、码头和小船 */
 export const island: ThemePack = {
@@ -37,33 +38,36 @@ export const island: ThemePack = {
 
   plaza(ctx) {
     plazaBase(ctx);
-    fountain(ctx, ctx.mats.fountain);
-    plazaBenches(ctx);
   },
 
-  decorate(ctx) {
-    const { K, mats } = ctx;
+  props(ctx, place) {
+    const LEAVES = [LEAF.leaf, LEAF.leafLight, LEAF.leafDark];
+    const FLOWERS = ['terracotta', 'mustard', 'rose'];
+    place('fountain', 0, 0, { params: { water: 'fountain' } });
+    plazaBenches(place);
     const lh = edgeSpot(ctx, -18, 2.6, 3);
-    if (lh) lighthouse(ctx, lh.x, lh.z);
+    if (lh) place('lighthouse', lh.x, lh.z);
     const p = edgeSpot(ctx, 95, 1.2, 3);
-    if (p) pier(ctx, p.x, p.z, p.a);
-    lampPosts(ctx);
-    const leaves = [K.M.leaf, K.M.leafLight, K.M.leafDark];
+    if (p) place('pier', p.x, p.z, { rot: Math.atan2(Math.cos(p.a), Math.sin(p.a)), params: { angle: p.a } });
+    lampPosts(ctx, place);
     scatter(ctx, {
       key: 'tree', spacing: 4.6, max: 160, pad: 2, keep: c => .42 + c * .24,
       place: (x, z) => {
         const h = rr(2.5, 3.9), variant = Math.floor(rand() * 3), kind = rand();
-        if (kind < .72) leafyTree(ctx, x, z, h, variant);
-        else shrub(ctx, x, z, rr(.35, .6), [leaves[variant], leaves[(variant + 1) % 3]]);
+        if (kind < .72) place('tree', x, z, { rot: rand() * Math.PI * 2, params: { h, variant } });
+        else shrubAt(place, x, z, rr(.35, .6), LEAVES[variant], LEAVES[(variant + 1) % 3]);
       },
     });
-    const flowers = [K.M.terracotta, K.M.mustard, K.M.rose];
     alongShore(ctx, 'shore', 4.2, [1, 1.8], (x, z, i) => {
       if (rand() < .3) return;
       const s = rr(.35, .6);
-      shrub(ctx, x, z, s, [leaves[i % 3], leaves[(i + 1) % 3]]);
-      if (rand() < .35) K.ball(ctx.raw, .1, flowers[i % 3], x + .2, GRASS_Y + s * 1.1, z + .1, [1, 1, 1], 10);
+      shrubAt(place, x, z, s, LEAVES[i % 3], LEAVES[(i + 1) % 3]);
+      if (rand() < .35) place('flower', x + .2, z + .1, { params: { color: FLOWERS[i % 3], h: s * 1.1 } });
     });
-    seaRocks(ctx, 9, mats.rock);
+    seaRocks(ctx, place, 9, 'rock');
+  },
+
+  decorate(ctx) {
+    decorateNow(island, ctx);
   },
 };

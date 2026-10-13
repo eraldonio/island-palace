@@ -15,11 +15,13 @@ import { t } from './i18n';
  *   1  区域 + 宫殿摆放
  *   2  小管家 pet；只是新增可选字段，compat 仍为 1
  *   3  删除旅程 journeys 与数字编码表 pao（随记笔记功能一起去掉）；只是去掉可选字段，compat 仍为 1
+ *   4  岛上的摆设 props（可以单独移动的树 / 石头 / 长椅……）；只是新增可选字段，compat 仍为 1。
+ *      字段不存在 = 这座岛还没烘焙过（见 props.ts 的 bakeRegionProps），烘焙过才能单个移动。
  * ===================================================================== */
 
 /** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的世界文件仍然认得出来（同 PALACE_FORMAT） */
 export const WORLD_FORMAT = 'kmind-palace-world';
-export const WORLD_VERSION = 3;
+export const WORLD_VERSION = 4;
 /** 读取本版本写出的世界数据至少需要的版本（规则同 PALACE_COMPAT） */
 export const WORLD_COMPAT = 1;
 
@@ -38,6 +40,18 @@ export interface PlacedPalace {
   roofColor?: string;
 }
 
+/**
+ * 岛上的一个摆设（树、石头、长椅……）。kind 是 props.ts 里注册的稳定 id，
+ * params 是那种 kind 自己的参数（尺寸、颜色、随机细节的种子……）。
+ */
+export interface PlacedProp {
+  id: string;
+  kind: string;
+  pos: Vec2;
+  rot?: number;
+  params?: Record<string, unknown>;
+}
+
 export interface WorldRegion {
   id: string;
   name: string;
@@ -49,6 +63,8 @@ export interface WorldRegion {
   origin?: Vec2;
   createdAt?: number;
   palaces: PlacedPalace[];
+  /** 岛上的摆设：烘焙过才有（没有 = 还没烘焙，装饰仍由主题程序化生成） */
+  props?: PlacedProp[];
 }
 
 export interface PalaceWorld {
@@ -125,19 +141,52 @@ const MIGRATIONS: Record<number, (w: PalaceWorld) => void> = {
   },
 };
 
+/**
+ * 读取摆设：字段不存在（老世界文件 / 还没烘焙）时返回 undefined，保持「没烘焙」这个状态；
+ * 空数组是烘焙过但岛上没有摆设，是另一回事。
+ */
+function normProps(raw: unknown): PlacedProp[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: PlacedProp[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const kind = 'kind' in item ? item.kind : undefined;
+    const pos = 'pos' in item ? item.pos : undefined;
+    if (typeof kind !== 'string' || !kind || !Array.isArray(pos)) continue;
+    const x = Number(pos[0]), z = Number(pos[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    const id = 'id' in item ? item.id : undefined;
+    const rot = 'rot' in item ? item.rot : undefined;
+    const params = 'params' in item ? item.params : undefined;
+    const prop: PlacedProp = { id: typeof id === 'string' && id ? id : gid('prop-'), kind, pos: [x, z] };
+    if (typeof rot === 'number' && Number.isFinite(rot)) prop.rot = rot;
+    // 上面已经确认是普通对象（不是数组 / null），TS 看不出来，这里显式收窄
+    if (typeof params === 'object' && params !== null && !Array.isArray(params)) prop.params = params as Record<string, unknown>;
+    out.push(prop);
+  }
+  return out;
+}
+
 /** 校验并规范化外部数据；无法识别时抛出错误 */
 export function normalizeWorld(raw: unknown): PalaceWorld {
   const w = raw as PalaceWorld;
   if (!w || typeof w !== 'object' || w.format !== WORLD_FORMAT) throw new Error(t('不是有效的世界数据'));
   const version = Number(w.version) || 1, compat = Number(w.compat) || version;
   if (compat > WORLD_VERSION) throw new Error(t('世界数据需要更新版本的插件才能打开（数据要求 {need}，当前支持 {have}），请升级插件', { need: compat, have: WORLD_VERSION }));
-  const regions: WorldRegion[] = (Array.isArray(w.regions) ? w.regions : []).map(r => ({
-    ...r,
-    theme: r.theme || 'island',
-    seed: Number.isFinite(r.seed) ? r.seed : 1,
-    origin: (Array.isArray(r.origin) ? r.origin : [0, 0]),
-    palaces: (Array.isArray(r.palaces) ? r.palaces : []).filter(p => p && p.palaceId && Array.isArray(p.pos)).map(p => ({ ...p, rot: normRot(p.rot) })),
-  }));
+  const regions: WorldRegion[] = (Array.isArray(w.regions) ? w.regions : []).map(r => {
+    const region: WorldRegion = {
+      ...r,
+      theme: r.theme || 'island',
+      seed: Number.isFinite(r.seed) ? r.seed : 1,
+      origin: (Array.isArray(r.origin) ? r.origin : [0, 0]),
+      palaces: (Array.isArray(r.palaces) ? r.palaces : []).filter(p => p && p.palaceId && Array.isArray(p.pos)).map(p => ({ ...p, rot: normRot(p.rot) })),
+    };
+    // props 不存在就整条字段都没有（= 没烘焙），不要留一个 undefined 占位
+    const props = normProps(r.props);
+    if (props) region.props = props;
+    else delete region.props;
+    return region;
+  });
   if (!regions.length) regions.push(createRegion());
   const out: PalaceWorld = { ...w, version: Math.max(version, WORLD_VERSION), compat: Math.max(Number(w.compat) || 0, WORLD_COMPAT), regions };
   for (let v = version; v < WORLD_VERSION; v++) MIGRATIONS[v]?.(out);
@@ -442,4 +491,54 @@ export function movePalaceToRegion(world: PalaceWorld, docs: Map<string, PalaceD
   to.palaces.push(placed);
   world.updatedAt = Date.now();
   return placed;
+}
+
+// =====================================================================
+// 岛上的摆设：树、石头、长椅……（数据见 props.ts）
+// =====================================================================
+
+/** 宫殿压到摆设上时，把摆设让开后的最小间距 */
+const PROP_PAD = .6;
+
+/** 岛上的摆设；没烘焙过（字段不存在）时是空数组 */
+export function propsOf(r: WorldRegion): PlacedProp[] {
+  return r.props || [];
+}
+
+export function findProp(r: WorldRegion, id: string): PlacedProp | null {
+  return propsOf(r).find(p => p.id === id) || null;
+}
+
+/** 加一个摆设（kind 见 props.ts）；params 里会带上一个由 id 推出的随机种子，让几何细节可复现 */
+export function addProp(r: WorldRegion, kind: string, pos: Vec2, rot?: number, params?: Record<string, unknown>): PlacedProp {
+  const id = gid('prop-');
+  const prop: PlacedProp = { id, kind, pos: [r3(pos[0]), r3(pos[1])], params: { ...(params || {}), seed: hash(id + kind) || 1 } };
+  if (rot !== undefined) prop.rot = r3(rot);
+  (r.props || (r.props = [])).push(prop);
+  return prop;
+}
+
+export function removeProp(r: WorldRegion, id: string): boolean {
+  const list = r.props;
+  if (!list) return false;
+  const i = list.findIndex(p => p.id === id);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  return true;
+}
+
+/** 摆设中心是否落在地块里 */
+export function propInLot(p: PlacedProp, lot: Rect): boolean {
+  return p.pos[0] >= lot[0] && p.pos[0] <= lot[2] && p.pos[1] >= lot[1] && p.pos[1] <= lot[3];
+}
+
+/** 把摆设挪到地块外：朝最近的一条边让开（留 PROP_PAD 米） */
+export function nudgePropOutOfLot(p: PlacedProp, lot: Rect): void {
+  const [x, z] = p.pos;
+  const left = x - lot[0], right = lot[2] - x, top = z - lot[1], bottom = lot[3] - z;
+  const near = Math.min(left, right, top, bottom);
+  if (near === left) p.pos[0] = lot[0] - PROP_PAD;
+  else if (near === right) p.pos[0] = lot[2] + PROP_PAD;
+  else if (near === top) p.pos[1] = lot[1] - PROP_PAD;
+  else p.pos[1] = lot[3] + PROP_PAD;
 }

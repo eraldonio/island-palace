@@ -10,8 +10,11 @@ import { seedFromString, rand, rr } from '../random';
 
 /* =====================================================================
  * 场景主题（ThemePack）：一座岛「长什么样」全部由主题决定——
- * 地形（海岸 / 地面 / 岛底）、广场中心物、地标、树木与海岸装饰、屋顶积雪…
+ * 地形（海岸 / 地面 / 岛底）、广场铺装、道路旁 / 岸边的摆设…
  * 宫殿本身不受主题影响。这里是各主题共用的类型和小工具。
+ *
+ * 岛上的摆设（树、石头、长椅……）不在这里建几何：主题的 props(ctx, place) 只决定摆什么、
+ * 摆在哪、参数是什么，几何在 props.ts 里按 kind 建（这样摆件才能单独移动 / 存盘）。
  * 所有坐标都是区域局部坐标（广场中心为原点，草地顶面 y = GRASS_Y）。
  * ===================================================================== */
 
@@ -21,6 +24,12 @@ export const DEG = Math.PI / 180;
 
 export type Mats = Record<string, THREE.Material>;
 export interface Landmark { kind: string; x: number; z: number; angle: number }
+
+/** 树叶材质名（顺序固定）：摆设的参数里只存序号，props.ts 按这里的名字取材质 */
+export const LEAF_NAMES = ['leaf', 'leafLight', 'leafDark', 'leafOlive'] as const;
+export type LeafName = typeof LEAF_NAMES[number];
+/** 树叶序号的具名常量：摆放时写 LEAF.leafDark 这样的写法，存进 params 的是序号 */
+export const LEAF = Object.fromEntries(LEAF_NAMES.map((n, i) => [n, i])) as Record<LeafName, number>;
 
 export interface ThemeCtx {
   K: Kit;
@@ -44,6 +53,9 @@ export interface ThemeCtx {
   landmarks: Landmark[];
 }
 
+/** 摆一个摆设：只决定「什么 kind、在哪、朝哪边、参数是什么」，几何见 props.ts */
+export type PropPlace = (kind: string, x: number, z: number, opts?: { rot?: number; params?: Record<string, unknown> }) => void;
+
 export interface ThemePack {
   id: string;
   name: string;
@@ -60,7 +72,11 @@ export interface ThemePack {
   roofSnow?: boolean;
   materials(K: Kit): Mats;
   terrain(ctx: ThemeCtx): void;
+  /** 广场铺装（生几何，不随摆设移动） */
   plaza(ctx: ThemeCtx): void;
+  /** 岛上的摆设：决定摆什么、摆在哪（同一份代码喂程序化和烘焙两条路） */
+  props(ctx: ThemeCtx, place: PropPlace): void;
+  /** 兼容旧渲染器：等价于 props() 里立刻建几何的那条路；渲染层改成走 region.props 后删掉 */
   decorate(ctx: ThemeCtx): void;
 }
 
@@ -229,7 +245,7 @@ export function commonMats(K: Kit): Mats {
   };
 }
 
-/** 广场地面：铺装圆盘 + 路缘 + 内圈 */
+/** 广场地面：铺装圆盘 + 路缘 + 内圈（生几何：铺装不随摆设动） */
 export function plazaBase(ctx: ThemeCtx) {
   const { K, mats, raw } = ctx;
   const c = (r: number, h: number, y: number, mat: THREE.Material, seg = 72) => {
@@ -241,42 +257,19 @@ export function plazaBase(ctx: ThemeCtx) {
   c(2.4, .02, GRASS_Y + .07, mats.paverDark, 48);
 }
 
-/** 广场四周的长椅和花槽 */
-export function plazaBenches(ctx: ThemeCtx, planters = true) {
-  const { catalog, raw } = ctx;
+/** 广场四周的长椅和花槽（只决定位置，几何见 props.ts 的 bench / planter） */
+export function plazaBenches(place: PropPlace, planters = true) {
   for (let i = 0; i < 4; i++) {
     const a = i * Math.PI / 2 + Math.PI / 4;
-    seedFromString('plaza-bench-' + i);
-    const b = catalog.bench.build({ w: 1.6 });
-    b.position.set(Math.sin(a) * 4.4, GRASS_Y + .06, Math.cos(a) * 4.4);
-    b.rotation.y = a + Math.PI;
-    raw.add(b);
+    place('bench', Math.sin(a) * 4.4, Math.cos(a) * 4.4, { rot: a + Math.PI, params: { w: 1.6 } });
     if (!planters) continue;
-    seedFromString('plaza-planter-' + i);
-    const p = catalog.planter.build({ w: 1.2 });
     const pa = a + Math.PI / 4;
-    p.position.set(Math.sin(pa) * 5.1, GRASS_Y + .06, Math.cos(pa) * 5.1);
-    p.rotation.y = pa;
-    raw.add(p);
+    place('planter', Math.sin(pa) * 5.1, Math.cos(pa) * 5.1, { rot: pa, params: { w: 1.2 } });
   }
 }
 
-/** 喷泉；frozen 时水面换成冰 */
-export function fountain(ctx: ThemeCtx, water: THREE.Material) {
-  const { K, mats, raw } = ctx;
-  const c = (rt: number, rb: number, h: number, y: number, mat: THREE.Material, seg = 48) => {
-    const m = K.mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
-    m.position.y = y + h / 2; raw.add(m); return m;
-  };
-  c(1.9, 2.0, .5, GRASS_Y + .05, mats.stone);
-  c(1.72, 1.72, .04, GRASS_Y + .5, water).castShadow = false;
-  c(.18, .26, 1.1, GRASS_Y + .5, mats.stone, 20);
-  c(.75, .3, .22, GRASS_Y + 1.5, mats.stone, 32);
-  const top = K.mesh(new THREE.SphereGeometry(.2, 20, 12), water); top.position.y = GRASS_Y + 1.85; raw.add(top);
-}
-
 /** 路灯：沿路每隔一段放一盏 */
-export function lampPosts(ctx: ThemeCtx, max = 8) {
+export function lampPosts(ctx: ThemeCtx, place: PropPlace, max = 8) {
   const net = ctx.roads;
   if (!net) return;
   const ok = (x: number, z: number) => !nearLot(ctx, x, z, .3) && !net.onRoad(x, z, .25) && Math.hypot(x, z) > PLAZA_R + .6 && !blocked(ctx, x, z);
@@ -297,17 +290,13 @@ export function lampPosts(ctx: ThemeCtx, max = 8) {
       if (acc < 0) acc = 4;
     }
   }
-  spots.forEach(([x, z], i) => {
-    seedFromString('lamp-' + i);
-    const l = ctx.catalog.lampPost.build({});
-    l.position.set(x, GRASS_Y, z);
-    ctx.raw.add(l);
-  });
+  for (const [x, z] of spots) place('lamp', x, z);
 }
 
 /**
  * 在抖动网格上撒点（树木等）：同一个格子的位置由种子决定，岛变大时已有的树不会乱跳。
  * keep(cluster) 返回保留概率；cluster 是 -3..3 的低频噪声，用来让树成簇。
+ * place 回调负责抽这一棵的随机细节（尺寸、色彩…），再交给 props.ts 的 place()。
  */
 export function scatter(ctx: ThemeCtx, opts: { key: string; spacing: number; max: number; pad: number; edge?: number; keep(cluster: number): number; place(x: number, z: number, i: number): void }) {
   const S = opts.spacing, seedN = ctx.region.seed, [cx, cz] = ctx.center, R = ctx.maxR;
@@ -341,119 +330,31 @@ export function alongShore(ctx: ThemeCtx, key: string, every: number, inset: [nu
 }
 
 /** 海里的礁石 */
-export function seaRocks(ctx: ThemeCtx, n: number, mat: THREE.Material, dist: [number, number] = [2.2, 5.5]) {
-  const { K, raw } = ctx, [cx, cz] = ctx.center;
+export function seaRocks(ctx: ThemeCtx, place: PropPlace, n: number, mat: string, dist: [number, number] = [2.2, 5.5]) {
+  const [cx, cz] = ctx.center;
   seedFromString('rocks:' + ctx.region.seed);
   for (let i = 0; i < n; i++) {
     const a = rr(0, Math.PI * 2), r = ctx.R(a) + rr(dist[0], dist[1]);
     const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
     if (blocked(ctx, x, z, 2)) continue;
-    const s = rr(.5, 1.1);
-    const m = K.mesh(new THREE.DodecahedronGeometry(s, 0), mat);
-    m.position.set(x, ctx.seaY + s * .2, z); m.rotation.set(rr(0, 3), rr(0, 3), 0); m.scale.y = .7;
-    raw.add(m);
-    if (rand() < .6) {
-      const m2 = K.mesh(new THREE.DodecahedronGeometry(s * .55, 0), mat);
-      m2.position.set(x + s * 1.1, ctx.seaY + s * .1, z + rr(-.5, .5)); m2.scale.y = .7;
-      raw.add(m2);
-    }
+    const s = rr(.5, 1.1), rx = rr(0, 3), ry = rr(0, 3);
+    const extra = rand() < .6, dz = extra ? rr(-.5, .5) : 0;
+    place('sea-rock', x, z, { params: { mat, s, rx, ry, extra, dz } });
   }
 }
 
-/** 灌木丛（几颗低多边形球） */
-export function shrub(ctx: ThemeCtx, x: number, z: number, s: number, leaves: THREE.Material[]) {
-  const { K, raw } = ctx;
-  K.ico(raw, s, leaves[0], x, GRASS_Y + s * .55, z, 1);
-  if (rand() < .5) K.ico(raw, s * .7, leaves[1 % leaves.length], x + rr(-.5, .5), GRASS_Y + s * .4, z + rr(-.5, .5), 1);
+/** 灌木（摆放用）：随机细节在这里抽完，几何见 props.ts 的 shrub */
+export function shrubAt(place: PropPlace, x: number, z: number, s: number, leafA: number, leafB: number) {
+  const second = rand() < .5;
+  const dx = second ? rr(-.5, .5) : 0, dz = second ? rr(-.5, .5) : 0;
+  place('shrub', x, z, { params: { s, leafA, leafB, second, dx, dz } });
 }
 
-/** 针叶树：树干 + 几层圆锥；snow 时每层顶上积一层雪 */
-export function conifer(ctx: ThemeCtx, x: number, z: number, h: number, snow = false) {
-  const { K, mats, raw } = ctx;
-  const g = new THREE.Group();
-  const trunk = K.mesh(new THREE.CylinderGeometry(.08, .13, h * .3, 8), K.M.bark);
-  trunk.position.y = h * .15; g.add(trunk);
-  const tiers = 3, leaf = rand() < .5 ? mats.pine : mats.pineLight;
-  for (let i = 0; i < tiers; i++) {
-    const t = i / tiers, r = h * (.34 - t * .09), th = h * (.42 - t * .06), y = h * (.22 + t * .24);
-    const cone = K.mesh(new THREE.ConeGeometry(r, th, 7), leaf);
-    cone.position.y = y + th / 2; cone.rotation.y = rr(0, 1); g.add(cone);
-    if (snow) {
-      const cap = K.mesh(new THREE.ConeGeometry(r * .62, th * .48, 7), mats.snowCap);
-      cap.position.y = y + th - th * .24 + .02; cap.rotation.y = cone.rotation.y; g.add(cap);
-    }
-  }
-  g.position.set(x, GRASS_Y, z);
-  raw.add(g);
-  return g;
-}
-
-/** 阔叶树（沿用物件目录里的树） */
-export function leafyTree(ctx: ThemeCtx, x: number, z: number, h: number, variant: number) {
-  const t = ctx.catalog.tree.build({ h, variant });
-  t.position.set(x, GRASS_Y, z);
-  t.rotation.y = rand() * Math.PI * 2;
-  ctx.raw.add(t);
-  return t;
-}
-
-/** 灯塔 */
-export function lighthouse(ctx: ThemeCtx, x: number, z: number, base = GRASS_Y) {
-  const { K, mats } = ctx;
-  const g = new THREE.Group();
-  const tower = (r0: number, r1: number, h: number, y: number, mat: THREE.Material) => {
-    const m = K.mesh(new THREE.CylinderGeometry(r1, r0, h, 28), mat); m.position.y = y + h / 2; g.add(m);
-  };
-  tower(1.4, 1.5, .35, 0, mats.stone);
-  for (let i = 0; i < 5; i++) tower(1.1 - i * .1, 1.0 - i * .1, 1.2, .35 + i * 1.2, i % 2 ? mats.red : mats.white);
-  tower(.72, .72, .16, 6.35, mats.dark);
-  const lamp = K.mesh(new THREE.CylinderGeometry(.42, .42, .8, 16), K.G.bulb); lamp.position.y = 6.91; g.add(lamp);
-  const cap = K.mesh(new THREE.ConeGeometry(.62, .7, 16), mats.red); cap.position.y = 7.66; g.add(cap);
-  K.addLight(g, 0, 6.9, 0, 30, 30, '#ffd9a0');
-  g.position.set(x, base, z);
-  ctx.raw.add(g);
-  ctx.blockers.push({ x, z, r: 3.5 });
-  ctx.landmarks.push({ kind: 'lighthouse', x, z, angle: 0 });
-}
-
-/** 码头 + 小船（局部 +z 指向海面） */
-export function pier(ctx: ThemeCtx, x: number, z: number, angle: number) {
-  const { K, mats } = ctx;
-  const g = new THREE.Group();
-  const L = 10;
-  const deck = K.mesh(new THREE.BoxGeometry(2.2, .14, L), mats.wood); deck.position.set(0, -.3, L / 2 - 1); g.add(deck);
-  for (let i = 0; i < 10; i++) {
-    const plank = K.mesh(new THREE.BoxGeometry(2.24, .02, .04), mats.woodDark, false); plank.position.set(0, -.225, i * 1 - .5); g.add(plank);
-  }
-  for (const zz of [2.5, 5.5, 8.5]) for (const xx of [-1.05, 1.05]) {
-    const p = K.mesh(new THREE.CylinderGeometry(.1, .1, 1.3, 10), mats.woodDark); p.position.set(xx, -.6, zz); g.add(p);
-  }
-  g.add(boat(ctx, 2.3, WATER_Y - .12, 7.4, .08));
-  g.position.set(x, 0, z);
-  g.rotation.y = Math.atan2(Math.cos(angle), Math.sin(angle));
-  ctx.raw.add(g);
-  ctx.blockers.push({ x, z, r: 3 });
-  ctx.landmarks.push({ kind: 'pier', x, z, angle });
-}
-
-/** 小船：俯视轮廓（船头尖、船尾平）挤出成船身，里面一块深色船舱 + 两块横坐板 */
-export function boat(ctx: ThemeCtx, x: number, y: number, z: number, rot = 0) {
-  const { K, mats } = ctx;
-  const hullShape = (w: number, l: number) => {
-    const s = new THREE.Shape();
-    s.moveTo(-w / 2, -l / 2); s.lineTo(w / 2, -l / 2);
-    s.quadraticCurveTo(w / 2 + .05, l * .15, 0, l / 2);
-    s.quadraticCurveTo(-w / 2 - .05, l * .15, -w / 2, -l / 2);
-    return s;
-  };
-  const b = new THREE.Group();
-  const hullGeo = new THREE.ExtrudeGeometry(hullShape(1.3, 3.4), { depth: .42, bevelEnabled: true, bevelThickness: .08, bevelSize: .08, bevelSegments: 2, curveSegments: 12 });
-  const hull = K.mesh(hullGeo, [mats.hull, mats.red]); hull.rotation.x = -Math.PI / 2; b.add(hull);
-  const inner = K.mesh(new THREE.ExtrudeGeometry(hullShape(1.02, 2.9), { depth: .05, bevelEnabled: false, curveSegments: 12 }), mats.woodDark, false);
-  inner.rotation.x = -Math.PI / 2; inner.position.set(0, .46, .05); b.add(inner);
-  for (const zz of [-.55, .35]) { const seat = K.mesh(new THREE.BoxGeometry(1.1, .05, .26), mats.wood, false); seat.position.set(0, .58, zz); b.add(seat); }
-  b.position.set(x, y, z); b.rotation.y = rot;
-  return b;
+/** 针叶树（摆放用）：几何见 props.ts 的 conifer */
+export function coniferAt(place: PropPlace, x: number, z: number, h: number, snow = false) {
+  const leaf = rand() < .5 ? 'pine' : 'pineLight';
+  const tier = [rr(0, 1), rr(0, 1), rr(0, 1)];
+  place('conifer', x, z, { params: { h, snow, leaf, tier } });
 }
 
 /** 按顶点随机扰动（低多边形岩石 / 山体） */
@@ -464,7 +365,7 @@ export function jitter(geo: THREE.BufferGeometry, amount: number, keepBottomY?: 
   for (let i = 0; i < pos.count; i++) {
     const k = key(i);
     if (!offs.has(k)) offs.set(k, [rr(-amount, amount), rr(-amount, amount) * .6, rr(-amount, amount)]);
-    const [dx, dy, dz] = offs.get(k);
+    const [dx, dy, dz] = offs.get(k)!;
     if (keepBottomY !== undefined && Math.abs(pos.getY(i) - keepBottomY) < 1e-3) pos.setXYZ(i, pos.getX(i) + dx, pos.getY(i), pos.getZ(i) + dz);
     else pos.setXYZ(i, pos.getX(i) + dx, pos.getY(i) + dy, pos.getZ(i) + dz);
   }
