@@ -29,6 +29,7 @@ export const ICONS = {
   planet: '<svg class="kp-i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M4.6 15.8C2.4 17.6 1.6 19 2.2 19.7c1.1 1.3 7.2-1.4 12.7-6.2 5.5-4.7 8.4-9.3 7.3-10.4-.6-.6-2.2-.2-4.4 1"/></svg>',
   globe: '<svg class="kp-i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5s-1.2 6.1-3.8 8.5c-2.6-2.4-3.8-5.2-3.8-8.5s1.2-6.1 3.8-8.5Z"/></svg>',
   map: '<svg class="kp-i" viewBox="0 0 24 24"><path d="m3 6 6-2 6 2 6-2v14l-6 2-6-2-6 2V6Z"/><path d="M9 4v14M15 6v14"/></svg>',
+  note: '<svg class="kp-i" viewBox="0 0 24 24"><path d="M4.5 4.5h15v10.5l-4.5 4.5H4.5V4.5Z"/><path d="M15 19.5V15h4.5"/></svg>',
 };
 
 export function escapeHtml(s: string) {

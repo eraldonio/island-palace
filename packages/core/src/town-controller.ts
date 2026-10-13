@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import type { PalaceView } from './view';
 import { type PalaceDoc, type Vec2 } from './schema';
-import type { PropHit, RegionLayer } from './world-layer';
+import type { PropHit, NotePick, RegionLayer } from './world-layer';
 import type { ParamSpec } from './catalog';
 import { propKind, propKinds, type PropKind } from './props';
 import { ThumbnailRenderer } from './thumbs';
 import { ICONS, escapeHtml, timeAgo } from './icons';
 import { html, rich } from './dom';
+import { NOTE_LIFT, noteCorners, notePaper, noteToDom, noteToWorld } from './notes';
 import { TEMPLATES, createFromTemplate } from './templates/basic';
 import { THEMES, getTheme } from './themes';
 import * as W from './world';
@@ -24,6 +25,10 @@ const GRASS_Y = -.15;
 const PEEK_DELAY = 280;
 /** 摆设之间的最小间距 / 和宫殿地块、广场的额外退让 */
 const PROP_GAP = .6;
+/** 便签吸附的网格（和编辑器里物件摆放一致：5 cm） */
+const NOTE_GRID = .05;
+const snapNote = (n: number) => Math.round(n / NOTE_GRID) * NOTE_GRID;
+const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
 
@@ -31,10 +36,25 @@ interface PaletteItem { kind: 'palace' | 'region'; id: string; title: string; su
 type Drag =
   | { kind: 'palace'; id: string; regionId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
   | { kind: 'region'; id: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
-  | { kind: 'prop'; regionId: string; propId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean };
+  | { kind: 'prop'; regionId: string; propId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean }
+  | { kind: 'note'; regionId: string; noteId: string; offset: Vec2; orig: Vec2; before: string; valid: boolean; moved: boolean };
 
 /** 正在往岛上放的新摆设：先按数据加进去（预览就是真的那条数据），取消时再撤回 */
 interface PropPlacing { prop: W.PlacedProp; regionId: string; before: string; valid: boolean; down: { x: number; y: number } | null }
+
+/** 正在往岛上放的新便签：同样是先插数据、预览就是真数据 */
+interface NotePlacing { note: W.PlacedNote; regionId: string; before: string; valid: boolean; down: { x: number; y: number } | null }
+
+/** Quill 的最小接口：动态 import，免得把编辑器塞进所有入口的打包 */
+interface QuillLike {
+  root: HTMLElement;
+  clipboard: { convert(input: { html: string }): unknown };
+  setContents(delta: unknown, source?: string): void;
+  getLength(): number;
+  setSelection(index: number, length?: number): void;
+  history: { clear(): void };
+  focus(): void;
+}
 
 export class TownController {
   selectedId: string | null = null;
@@ -50,6 +70,14 @@ export class TownController {
   private drag: Drag | null = null;
   private placing: { doc: PalaceDoc; placed: W.PlacedPalace; regionId: string; valid: boolean; down: { x: number; y: number } | null } | null = null;
   private propPlacing: PropPlacing | null = null;
+  /** 便签：正在放的 / 选中的 / 直接在便签上编辑的（noteLive）/ 拖角改尺寸的（noteResize）/ 打开富文本编辑器的 */
+  private notePlacing: NotePlacing | null = null;
+  private selectedNote: string | null = null;
+  private noteLive: { id: string; regionId: string } | null = null;
+  private noteResize: { regionId: string; noteId: string; corner: number; fixed: Vec2; before: string; moved: boolean } | null = null;
+  private noteModal: { id: string; regionId: string } | null = null;
+  private quill: QuillLike | null = null;
+  private quillReady: Promise<QuillLike> | null = null;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private listOpen = false;
@@ -109,6 +137,31 @@ export class TownController {
       if (row) this.setHover(row.dataset.id);
     });
     v.on(v.ui.townList, 'pointerleave', () => this.setHover(null));
+    // 直接在便签上写字：视图层会忽略 contenteditable 里的按键（免得打字触发世界快捷键），
+    // 所以 Esc / ⌘Enter 在这里自己收尾；点走别处（失焦）也算写完。
+    v.on(v.ui.noteLiveBox, 'keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || ((e.metaKey || e.ctrlKey) && e.key === 'Enter')) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.commitNoteLive();
+      }
+    });
+    v.on(v.ui.noteLiveBox, 'blur', () => this.commitNoteLive());
+    // 四个角：拖它改尺寸（宽 / 深各自独立）
+    v.on(v.ui.noteHandles, 'pointerdown', (e: PointerEvent) => {
+      const el = (e.target as HTMLElement).closest<HTMLElement>('.kp-note-handle');
+      if (!el) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.beginNoteResize(Number(el.dataset.corner) || 0, e);
+    });
+    v.on(v.ui.noteEditorWrap, 'keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeNoteEditor();
+      }
+    });
   }
 
   private get town() { return this.v.town; }
@@ -116,7 +169,7 @@ export class TownController {
   private get docs() { return this.v.docs; }
   private get world() { return this.v.world; }
   /** 拖动 / 放置进行中：镜头所在的岛不要自动切换 */
-  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing; }
+  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing || !!this.notePlacing || !!this.noteLive || !!this.noteResize; }
 
   private layerOf(regionId: string): RegionLayer | undefined { return this.town.regions.get(regionId); }
   private regionById(id: string) { return this.world.regions.find(r => r.id === id); }
@@ -166,6 +219,7 @@ export class TownController {
       <nav class="kp-bar kp-glass kp-town-only kp-town-edit">
         <span class="kp-bar-hint" data-ref="townEditHint"></span>
         <button class="kp-icon kp-near-only" data-act="propPanel" title="${t('添加摆设（A）')}">${rich(ICONS.plus)}</button>
+        <button class="kp-icon kp-near-only" data-act="noteAdd" title="${t('添加便签')}">${rich(ICONS.note)}</button>
         <button class="kp-icon kp-near-only" data-act="townRotate" title="${t('旋转选中的宫殿或摆设 90°（R）')}">${rich(ICONS.rotr)}</button>
         <span class="kp-sep"></span>
         <button class="kp-icon" data-act="townUndo" data-ref="townUndo" title="${t('撤销（⌘Z）')}" disabled>${rich(ICONS.undo)}</button>
@@ -190,6 +244,17 @@ export class TownController {
           <b data-ref="confirmTitle"></b>
           <p data-ref="confirmMsg"></p>
           <div class="kp-row"><button data-act="confirmNo">${t('取消')}</button><button class="kp-danger-strong" data-act="confirmYes" data-ref="confirmYes">${t('删除')}</button></div>
+        </div>
+      </div>
+      <div class="kp-note-live kp-hidden" data-ref="noteLive">
+        <div class="kp-note-live-box" data-ref="noteLiveBox" contenteditable="true" spellcheck="false"></div>
+      </div>
+      <div class="kp-note-handles kp-hidden" data-ref="noteHandles">${[0, 1, 2, 3].map(i => html`<div class="kp-note-handle" data-corner="${i}"></div>`)}</div>
+      <div class="kp-overlay kp-center kp-hidden" data-ref="noteEditorWrap">
+        <div class="kp-note-modal kp-glass">
+          <b>${t('编辑便签')}</b>
+          <div class="kp-note-editor" data-ref="noteEditor"></div>
+          <div class="kp-row"><button data-act="noteEditorCancel">${t('取消')}</button><button class="kp-primary kp-grow" data-act="noteEditorSave">${t('完成')}</button></div>
         </div>
       </div>`);
     this.v.root.querySelectorAll<HTMLElement>('[data-ref]').forEach(el => { this.v.ui[el.dataset.ref] = el; });
@@ -225,6 +290,7 @@ export class TownController {
     if (this.selectedId && !this.docs.has(this.selectedId)) this.selectedId = null;
     if (this.selectedRegion && !this.regionById(this.selectedRegion)) this.selectedRegion = null;
     if (this.selectedProp && !this.propAt(this.selectedProp)) this.selectProp(null);
+    if (this.selectedNote && !this.noteAt(this.selectedNote)) this.selectedNote = null;
     v.ui.townEditHint.replaceChildren(html`${v.far ? t('拖动岛换位置 · 岛和岛之间会留出海面') : rich(t('拖动宫殿或摆设换位置 · <b>R</b> 旋转 · <b>⌘D</b> 复制'))}`);
     this.renderCard();
     if (this.listOpen) this.renderList();
@@ -235,6 +301,9 @@ export class TownController {
   /** 进出宫殿之前：收起小镇里的各种临时状态 */
   beforeLevelChange() {
     this.cancelPlacing();
+    this.cancelNotePlacing();
+    this.commitNoteLive();
+    this.closeNoteEditor();
     this.setEditing(false);
     this.closePanel();
     this.toggleList(false);
@@ -298,17 +367,27 @@ export class TownController {
   }
 
   /**
-   * 摆设 / 宫殿一起拾取：谁离镜头近就选谁；深度接近（20cm 以内）时宫殿优先，
-   * 所以摆设不会抢走宫殿的点击，宫殿也不会被脚下更近的摆设挡住。地面落点排在两者之后。
+   * 摆设 / 便签 / 宫殿一起拾取：岛上的东西谁离镜头近就选谁；深度接近（20cm 以内）时宫殿优先，
+   * 所以岛上的小东西不会抢走宫殿的点击，宫殿也不会被脚边更近的东西挡住。地面落点排在最后。
    */
-  private pickPropOrPalace(e: { clientX: number; clientY: number }): { prop: PropHit | null; palaceId: string | null } {
+  private pickPropOrPalace(e: { clientX: number; clientY: number }): { prop: PropHit | null; note: NotePick | null; palaceId: string | null } {
     const ray = this.ray(e);
     const prop = this.town.pickProp(ray);
+    const note = this.town.pickNote(ray);
     const shell = this.town.pick(ray);
-    const dProp = prop ? ray.ray.origin.distanceTo(prop.point) : Infinity;
-    const dShell = shell ? ray.ray.origin.distanceTo(shell.point) : Infinity;
-    if (shell && dShell <= dProp + .2) return { prop: null, palaceId: shell.id };
-    return { prop, palaceId: null };
+    const away = (p: { point: THREE.Vector3 } | null) => p ? ray.ray.origin.distanceTo(p.point) : Infinity;
+    const dNear = Math.min(away(prop), away(note));
+    if (shell && away(shell) <= dNear + .2) return { prop: null, note: null, palaceId: shell.id };
+    return away(note) <= away(prop) ? { prop: null, note, palaceId: null } : { prop, note: null, palaceId: null };
+  }
+
+  /** 便签和它所在的岛（撤销之后 id 可能已经没了） */
+  private noteAt(noteId: string) {
+    for (const region of this.world.regions) {
+      const note = W.findNote(region, noteId);
+      if (note) return { region, note };
+    }
+    return null;
   }
 
   /** 摆设和它所在的岛（找不到返回 null：撤销之后 id 可能已经没了） */
@@ -330,7 +409,7 @@ export class TownController {
     const e = v.lastPointer;
     if (e && !v.camTween) {
       v.lastPointer = null;
-      if (!e.buttons && !this.drag && !this.placing && !this.propPlacing) {
+      if (!e.buttons && !this.drag && !this.placing && !this.propPlacing && !this.notePlacing) {
         if (v.far) {
           this.setRegionHover(this.pickRegion(e));
           this.setPropHover(null);
@@ -356,6 +435,7 @@ export class TownController {
     if (target && ready && !(v.peek?.id === target && v.peek.open)) v.openPeek(target);
     else if (!target && v.peek?.open) v.closePeek();
     v.root.classList.toggle('kp-tags-near', v.frustum / v.isoCam.zoom < 46);
+    this.positionNoteOverlays();
   }
 
   private setHover(id: string | null) {
@@ -445,8 +525,19 @@ export class TownController {
     if (id && this.panel === 'props') this.closePanel();
     this.selectedProp = id;
     this.town.setPropSelection(id);
-    if (id) this.select(null);
+    if (id) { this.selectedNote = null; this.select(null); }
     else { this.renderCard(); this.updateMarker(); }
+    this.v.invalidate();
+  }
+
+  /** 选中一张便签（和摆设 / 宫殿的选中互斥）；选中的反馈是地面上的橙框 + 卡片 */
+  selectNote(id: string | null) {
+    if (id !== this.selectedNote) this.commitNoteLive();
+    if (id && this.panel === 'props') this.closePanel();
+    this.selectedNote = id;
+    if (id) { this.selectedProp = null; this.town.setPropSelection(null); this.select(null); this.selectRegion(null); }
+    this.renderCard();
+    this.updateMarker();
     this.v.invalidate();
   }
 
@@ -461,6 +552,7 @@ export class TownController {
   private updateMarker(valid = true) {
     const v = this.v;
     if (v.level !== 'town') return;
+    if (this.selectedNote) { this.noteMarker(this.selectedNote, valid); return; }
     if (this.selectedProp) { this.propMarker(this.selectedProp, valid); return; }
     const id = this.placing?.doc.id || (v.far ? null : this.selectedId);
     const s = id ? this.town.shells.get(id) : null;
@@ -481,21 +573,36 @@ export class TownController {
     v.setMarker(box, layer.lift + GRASS_Y + .07, .05, valid ? '#ef8235' : '#d9483b');
   }
 
+  /** 选中 / 拖动中的便签：渲染层给的包围盒已经是世界坐标，直接铺在地面上 */
+  private noteMarker(noteId: string, valid: boolean) {
+    const v = this.v;
+    const at = this.noteAt(noteId);
+    const layer = at ? this.layerOf(at.region.id) : undefined;
+    const box = at && layer ? this.town.noteBox(at.region.id, noteId) : null;
+    if (!at || !layer || !box) { v.setMarker(null); return; }
+    v.setMarker(box, layer.lift + GRASS_Y + .04, .04, valid ? '#ef8235' : '#d9483b');
+  }
+
   onClick(e: PointerEvent) {
-    if (this.placing || this.propPlacing) return;
+    if (this.placing || this.propPlacing || this.notePlacing) return;
     if (this.v.far) { this.selectRegion(this.pickRegion(e)); return; }
     if (!this.editing) { this.select(this.pickPalace(e)); return; }
     const hit = this.pickPropOrPalace(e);
-    if (hit.prop) this.selectProp(hit.prop.propId);
-    else this.select(this.pickPalace(e));
+    if (hit.note) this.selectNote(hit.note.noteId);
+    else if (hit.prop) this.selectProp(hit.prop.propId);
+    else { this.selectNote(null); this.select(this.pickPalace(e)); }
   }
 
   onDblClick(e: MouseEvent) {
-    if (this.editing || this.placing || this.propPlacing) return;
+    if (this.placing || this.propPlacing || this.notePlacing) return;
     if (this.v.far) {
       const rid = this.pickRegion(e);
       if (rid) this.v.flyToRegion(rid);
       return;
+    }
+    if (this.editing) {
+      const hit = this.pickPropOrPalace(e);
+      if (hit.note) { this.selectNote(hit.note.noteId); this.startNoteLive(hit.note.noteId); return; }
     }
     const id = this.pickPalace(e);
     if (id) this.v.enterPalace(id);
@@ -507,7 +614,8 @@ export class TownController {
 
   private renderCard() {
     const v = this.v, card = v.ui.townCard;
-    if (v.level !== 'town' || this.placing || this.propPlacing || this.panel === 'props') { card.classList.add('kp-hidden'); return; }
+    if (v.level !== 'town' || this.placing || this.propPlacing || this.notePlacing || this.panel === 'props') { card.classList.add('kp-hidden'); return; }
+    if (this.selectedNote) return this.renderNoteCard();
     if (this.selectedProp) return this.renderPropCard();
     if (this.editing) { card.classList.add('kp-hidden'); return; }
     if (this.selectedRegion) return this.renderRegionCard(this.selectedRegion);
@@ -570,6 +678,31 @@ export class TownController {
         <button data-act="propDuplicate" title="${t('复制一份（⌘D）')}">${t('复制')}</button>
         <button class="kp-danger" data-act="propDelete" title="${t('删除这个摆设')}">${t('删除')}</button>
       </div>`);
+    card.classList.remove('kp-hidden');
+  }
+
+  /** 便签的卡片：换纸色、预览字号、尺寸、旋转、打开编辑器、删除（四角也能直接拖） */
+  private renderNoteCard() {
+    const v = this.v, card = v.ui.townCard;
+    const at = this.selectedNote && this.noteAt(this.selectedNote);
+    if (!at) { card.classList.add('kp-hidden'); return; }
+    const n = at.note;
+    card.replaceChildren(html`
+      <button class="kp-close" data-act="noteDeselect">×</button>
+      <div class="kp-room">${t('岛屿')} · ${t('便签')}</div>
+      <div class="kp-row">
+        <button data-act="noteColor" title="${t('换一种纸色')}"><i class="kp-dot" style="background:${notePaper(n)}"></i>${t('背景色')}</button>
+        <button data-act="noteSize" data-d="-1" title="${t('预览字号小一点')}">A−</button>
+        <button data-act="noteSize" data-d="1" title="${t('预览字号大一点')}">A+</button>
+        <button data-act="noteRotate" title="${t('旋转 90°（R）')}">${rich(ICONS.rotr)}</button>
+      </div>
+      <div class="kp-row">
+        <button data-act="noteResize" data-d="-1" title="${t('缩小便签（{step} m 一档）', { step: W.NOTE_SIZE.step })}">${t('缩小')}</button>
+        <button data-act="noteResize" data-d="1" title="${t('放大便签（{step} m 一档）', { step: W.NOTE_SIZE.step })}">${t('放大')}</button>
+        <button class="kp-primary kp-grow" data-act="noteEdit" title="${t('打开富文本编辑器')}">${t('编辑')}</button>
+        <button class="kp-danger" data-act="noteDelete" title="${t('删除这张便签')}">${t('删除')}</button>
+      </div>
+      <div class="kp-note-sm">${t('双击便签就能在世界上面直接写；拖四角改宽窄和深浅。')}</div>`);
     card.classList.remove('kp-hidden');
   }
 
@@ -646,9 +779,13 @@ export class TownController {
   setEditing(on: boolean) {
     if (on && this.v.readonly) return;
     if (!on) {
-      // 离开「布置」：正在放的摆设撤掉，选中的 / 悬停的放下（不管当前是不是布置模式都收干净）
+      // 离开「布置」：正在放的摆设 / 便签撤掉，选中的 / 悬停的放下（不管当前是不是布置模式都收干净）
       this.cancelPropPlacing();
+      this.cancelNotePlacing();
+      this.commitNoteLive();
+      this.closeNoteEditor();
       this.selectProp(null);
+      this.selectNote(null);
       this.setPropHover(null);
     }
     if (on === this.editing) return;
@@ -729,6 +866,11 @@ export class TownController {
   }
 
   private rotateSelected() {
+    // 便签优先：正在放 / 正选着便签时，R 转的是它
+    const notePlacing = this.notePlacing;
+    const noteAt = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+    if (notePlacing) { this.rotateNote(notePlacing.note, notePlacing.regionId); return; }
+    if (noteAt) { this.rotateNote(noteAt.note, noteAt.region.id); return; }
     // 摆设优先：正在放 / 正选着摆设时，R 转的是它
     const placing = this.propPlacing;
     const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
@@ -1086,6 +1228,352 @@ export class TownController {
     </svg>`;
   }
 
+  // =====================================================================
+  // 布置：岛上的便签
+  // =====================================================================
+
+  /** 从工具栏加一张便签：先按数据加进去（预览就是真数据），再点击地面放下 */
+  private startNotePlacing() {
+    const v = this.v, region = this.region, layer = this.layerOf(region.id);
+    if (!layer || v.far) { v.host.notify?.(t('先拉近到一座岛上再添加便签')); return; }
+    // 和放摆设一样：摆放期间先退出「布置」（底部只留摆放提示条），放完 / 取消再回到布置
+    this.setEditing(false);
+    this.closePanel();
+    const [ox, oz] = W.regionOrigin(region);
+    const pos = this.freeNoteSpot(layer, [snapNote(v.orbit.target.x - ox), snapNote(v.orbit.target.z - oz)]);
+    const before = this.snapshot();
+    const note = W.addNote(region, pos);
+    this.town.rebuildNotes(region.id);
+    this.notePlacing = { note, regionId: region.id, before, valid: true, down: null };
+    this.selectNote(note.id);
+    v.root.classList.add('kp-town-placing');
+    v.ui.townPlaceHint.replaceChildren(html`${rich(t('把便签放到岛上：点击地面放下 · <b>R</b> 旋转 · <b>Esc</b> 取消'))}`);
+    this.updateMarker(true);
+    v.invalidate();
+  }
+
+  /** 便签的落点：从 near 向外螺旋找一块在岛上的地；便签是平的、不挡东西，所以不做碰撞 */
+  private freeNoteSpot(layer: RegionLayer, near: Vec2): Vec2 {
+    for (let i = 0; i < 64; i++) {
+      const a = i * 2.399, d = i ? 1.2 + i * .55 : 0;
+      const x = snapNote(near[0] + Math.cos(a) * d), z = snapNote(near[1] + Math.sin(a) * d);
+      if (layer.onLand(x, z, 1.2)) return [x, z];
+    }
+    return near;
+  }
+
+  /** 吸附：编辑器里开着吸附（且没按 Alt）时对到 5 cm 网格 */
+  private snapPoint(p: Vec2, alt?: boolean): Vec2 {
+    const on = this.v.editor?.snap !== false && !alt;
+    return on ? [snapNote(p[0]), snapNote(p[1])] : p;
+  }
+
+  private moveNotePlacing(e: { clientX: number; clientY: number; altKey?: boolean }) {
+    const p = this.notePlacing;
+    if (!p) return;
+    const g = this.regionGround(e, p.regionId), layer = this.layerOf(p.regionId);
+    if (!g || !layer) return;
+    p.note.pos = this.snapPoint(g, e.altKey);
+    p.valid = layer.onLand(p.note.pos[0], p.note.pos[1], 1.2);
+    this.town.moveNotePreview(p.regionId, p.note.id, p.note.pos, p.note.rot || 0);
+    this.updateMarker(p.valid);
+    this.v.invalidate();
+  }
+
+  private commitNotePlacing() {
+    const p = this.notePlacing;
+    if (!p) return;
+    this.notePlacing = null;
+    this.v.root.classList.remove('kp-town-placing');
+    const region = this.regionById(p.regionId);
+    if (!p.valid || !region) {
+      if (region) W.removeNote(region, p.note.id);
+      this.selectNote(null);
+      if (region) this.town.rebuildNotes(p.regionId);
+      this.v.host.notify?.(t('便签要落在岛上'));
+      this.setEditing(true);
+      this.v.invalidate();
+      return;
+    }
+    this.pushUndo(p.before);
+    this.v.worldChanged();
+    // 回到「布置」，新便签保持选中（卡片会显示出来，可以接着改）
+    this.setEditing(true);
+    this.town.rebuildNotes(p.regionId);
+    this.v.invalidate();
+  }
+
+  private cancelNotePlacing() {
+    const p = this.notePlacing;
+    if (!p) return;
+    this.notePlacing = null;
+    this.v.root.classList.remove('kp-town-placing');
+    const region = this.regionById(p.regionId);
+    if (region) W.removeNote(region, p.note.id);
+    this.selectNote(null);
+    this.town.rebuildNotes(p.regionId);
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  private rotateNote(note: W.PlacedNote, regionId: string) {
+    note.rot = ((((note.rot || 0) + 90) % 360) + 360) % 360;
+    if (this.notePlacing) {
+      this.town.moveNotePreview(regionId, note.id, note.pos, note.rot);
+      this.v.invalidate();
+      return;
+    }
+    const before = this.snapshot();
+    this.town.rebuildNotes(regionId);
+    this.pushUndo(before);
+    this.v.worldChanged();
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  /** 改选中便签的一个字段（纸色 / 字号 / 尺寸）：一步撤销 */
+  private editNote(patch: Partial<W.PlacedNote>) {
+    const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+    if (!at) return;
+    const before = this.snapshot();
+    Object.assign(at.note, patch);
+    this.town.rebuildNotes(at.region.id);
+    this.pushUndo(before);
+    this.v.worldChanged();
+    this.renderCard();
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  /** 删除便签：不可撤销，所以先确认 */
+  private async deleteNote() {
+    const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+    if (!at) return;
+    const ok = await this.confirm(t('删除这张便签？'), t('便签删除后无法撤销。'), t('删除'));
+    if (!ok) return;
+    this.selectNote(null);
+    W.removeNote(at.region, at.note.id);
+    this.town.rebuildNotes(at.region.id);
+    this.v.worldChanged();
+    this.v.invalidate();
+  }
+
+  // ---- 编辑：直接在便签上写（DOM 贴在便签上，就是在世界上改） ----
+
+  private startNoteLive(id: string) {
+    const at = this.noteAt(id);
+    if (!at) return;
+    const v = this.v;
+    this.closeNoteEditor();
+    v.ui.noteLiveBox.replaceChildren(noteToDom(at.note.html));
+    this.noteLive = { id, regionId: at.region.id };
+    v.root.classList.add('kp-note-editing');
+    // 贴图只留纸面：文字交给 DOM（真文字，清晰、能改）
+    this.town.paperNote(at.region.id, id, true);
+    this.positionNoteOverlays();
+    v.ui.noteLive.classList.remove('kp-hidden');
+    v.invalidate();
+    // 摆好了再聚焦，并把光标放到末尾（不然 caret 会落在文首）
+    window.requestAnimationFrame(() => {
+      const box = v.ui.noteLiveBox;
+      box.focus();
+      const sel = window.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+  }
+
+  /** 写完：内容变了就存下来、贴图重新画上文字。便签内容不参与撤销（和卡片上的操作不一样）。 */
+  private commitNoteLive() {
+    const e = this.noteLive;
+    if (!e) return;
+    this.noteLive = null;
+    const v = this.v;
+    v.ui.noteLive.classList.add('kp-hidden');
+    v.root.classList.remove('kp-note-editing');
+    this.town.paperNote(e.regionId, e.id, false);
+    const at = this.noteAt(e.id);
+    const html_ = W.sanitizeNoteHtml(v.ui.noteLiveBox.innerHTML);
+    if (!at || html_ === at.note.html) { v.invalidate(); return; }
+    at.note.html = html_;
+    this.town.rebuildNotes(e.regionId);
+    v.worldChanged();
+    v.invalidate();
+  }
+
+  /** 便签局部坐标 → 屏幕 CSS 像素（相对 .kp-root） */
+  private noteScreen(layer: RegionLayer, note: W.PlacedNote, X: number, Z: number) {
+    const [lx, lz] = noteToWorld(note, X, Z);
+    const p = new THREE.Vector3(lx, GRASS_Y + NOTE_LIFT, lz).applyMatrix4(layer.group.matrixWorld).project(this.v.isoCam);
+    const r = this.v.renderer.domElement.getBoundingClientRect();
+    return { x: (p.x * .5 + .5) * r.width, y: (-p.y * .5 + .5) * r.height };
+  }
+
+  /**
+   * 便签落到屏幕上的那个四边形。正交相机下地面上的平面投到屏幕上是仿射的，
+   * 所以一个普通 DOM 元素用 matrix(a,b,c,d,e,f) 就能严丝合缝贴在便签上——
+   * 也因此这里的文字是真正被光栅化的文字，比画进贴图清晰得多。
+   */
+  private noteQuad(note: W.PlacedNote, layer: RegionLayer) {
+    const c = noteCorners(note);
+    const p00 = this.noteScreen(layer, note, c[0][0], c[0][1]);
+    const p10 = this.noteScreen(layer, note, c[1][0], c[1][1]);
+    const p01 = this.noteScreen(layer, note, c[2][0], c[2][1]);
+    const p11 = this.noteScreen(layer, note, c[3][0], c[3][1]);
+    const ux = p10.x - p00.x, uy = p10.y - p00.y;
+    const vx = p01.x - p00.x, vy = p01.y - p00.y;
+    const uw = Math.hypot(ux, uy) || 1, vh = Math.hypot(vx, vy) || 1;
+    return { p00, p10, p01, p11, ux, uy, vx, vy, uw, vh, mpx: uw / Math.max(.2, note.w) };
+  }
+
+  /** 每帧：把「直接在便签上写」的 DOM 和四个角贴到便签上（镜头动了也跟着） */
+  private positionNoteOverlays() {
+    const v = this.v;
+    const live = this.noteLive;
+    const id = live ? live.id : this.selectedNote;
+    const at = id ? this.noteAt(id) : null;
+    const layer = at ? this.layerOf(at.region.id) : undefined;
+    const q = at && layer ? this.noteQuad(at.note, layer) : null;
+    const wrap = v.ui.noteLive;
+    if (q && live) {
+      wrap.style.transformOrigin = '0 0';
+      // 基向量取单位长度：元素里的 1px 就是屏幕上的 1px，字不会被拉伸糊掉
+      wrap.style.transform = `matrix(${q.ux / q.uw}, ${q.uy / q.uw}, ${q.vx / q.vh}, ${q.vy / q.vh}, ${q.p00.x}, ${q.p00.y})`;
+      wrap.style.width = `${q.uw}px`;
+      wrap.style.height = `${q.vh}px`;
+      wrap.style.fontSize = `${Math.max(6, at!.note.fs * q.mpx)}px`;
+      wrap.style.padding = `${Math.max(2, q.mpx * .14)}px`;
+      wrap.classList.remove('kp-hidden');
+    } else wrap.classList.add('kp-hidden');
+
+    const handles = v.ui.noteHandles;
+    if (q && this.selectedNote && !live) {
+      const kids = handles.children as HTMLCollectionOf<HTMLElement>;
+      const pts = [q.p00, q.p10, q.p01, q.p11];
+      for (let i = 0; i < kids.length; i++) {
+        kids[i].style.left = `${pts[i].x}px`;
+        kids[i].style.top = `${pts[i].y}px`;
+      }
+      handles.classList.remove('kp-hidden');
+    } else handles.classList.add('kp-hidden');
+  }
+
+  // ---- 拖角改尺寸：宽 / 深各自独立，对角固定 ----
+
+  private beginNoteResize(corner: number, e: PointerEvent) {
+    const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+    if (!at) return;
+    const c = noteCorners(at.note);
+    const opp = c[3 - corner] || c[0];
+    // 指针要捕获在画布上：视图的 pointermove / pointerup 是挂在画布上的，
+    // 捕获在句柄上这些事件就到不了拖动逻辑（句柄只是 DOM，不是画布）。
+    try { this.v.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* 合成事件 */ }
+    this.commitNoteLive();
+    this.noteResize = {
+      regionId: at.region.id, noteId: at.note.id, corner,
+      fixed: noteToWorld(at.note, opp[0], opp[1]) as Vec2,
+      before: this.snapshot(), moved: false,
+    };
+    this.v.invalidate();
+  }
+
+  private moveNoteResize(e: { clientX: number; clientY: number; altKey?: boolean }) {
+    const rz = this.noteResize;
+    if (!rz) return;
+    const at = this.noteAt(rz.noteId);
+    const g = this.regionGround(e, rz.regionId);
+    if (!at || !g) return;
+    // 相对固定的那个角，在便签自己的坐标里量出新的宽 / 深
+    const relX = g[0] - rz.fixed[0], relZ = g[1] - rz.fixed[1];
+    const a = (at.note.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const X = relX * c - relZ * s, Z = relX * s + relZ * c;
+    const on = this.v.editor?.snap !== false && !e.altKey;
+    const snap = (n: number) => (on ? Math.round(n / NOTE_GRID) * NOTE_GRID : n);
+    const w = clampNum(snap(Math.abs(X)), W.NOTE_SIZE.min, W.NOTE_SIZE.max);
+    const h = clampNum(snap(Math.abs(Z)), W.NOTE_SIZE.min, W.NOTE_SIZE.max);
+    const sx = X < 0 ? -1 : 1, sz = Z < 0 ? -1 : 1;
+    const nx = rz.fixed[0] + (sx * w / 2) * c + (sz * h / 2) * s;
+    const nz = rz.fixed[1] - (sx * w / 2) * s + (sz * h / 2) * c;
+    if (w === at.note.w && h === at.note.h && nx === at.note.pos[0] && nz === at.note.pos[1]) return;
+    at.note.w = w;
+    at.note.h = h;
+    at.note.pos = [nx, nz];
+    rz.moved = true;
+    this.town.rebuildNotes(rz.regionId);
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  private endNoteResize() {
+    const rz = this.noteResize;
+    if (!rz) return;
+    this.noteResize = null;
+    if (rz.moved) {
+      this.pushUndo(rz.before);
+      this.v.worldChanged();
+    }
+    this.v.invalidate();
+  }
+
+  // ---- 编辑：打开富文本编辑器（Quill） ----
+
+  private quillFor(): Promise<QuillLike> {
+    if (this.quillReady) return this.quillReady;
+    this.quillReady = import('quill').then(mod => {
+      // esm / cjs 互操作：有 default 就用 default，否则整个模块就是构造器
+      const Ctor: unknown = mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;
+      // Quill 的运行时不导出可用的构造器类型，这里按最小接口造一个实例
+      const q = new (Ctor as new (el: Element, opts: unknown) => QuillLike)(this.v.ui.noteEditor, {
+        theme: 'snow',
+        placeholder: t('写点什么…'),
+        modules: { toolbar: [['bold', 'italic', 'underline'], [{ header: [1, 2, 3, false] }], [{ list: 'ordered' }, { list: 'bullet' }], ['link', 'clean']] },
+      });
+      this.quill = q;
+      return q;
+    });
+    return this.quillReady;
+  }
+
+  private async openNoteEditor(id: string) {
+    const at = this.noteAt(id);
+    if (!at) return;
+    this.commitNoteLive();
+    this.noteModal = { id, regionId: at.region.id };
+    this.v.ui.noteEditorWrap.classList.remove('kp-hidden');
+    const quill = await this.quillFor();
+    quill.setContents(quill.clipboard.convert({ html: W.sanitizeNoteHtml(at.note.html) }), 'silent');
+    quill.history.clear();
+    // 光标落到末尾：接着写，而不是每次都在开头（或上次的位置）插入。
+    // 必须先 focus()：它会把 Quill 存着的那段选区恢复回来，之后设的光标才算数。
+    quill.focus();
+    quill.setSelection(quill.getLength() - 1, 0);
+  }
+
+  /** 内容不参与撤销（和原地编辑一致） */
+  private saveNoteEditor() {
+    const m = this.noteModal;
+    if (!m) return;
+    this.noteModal = null;
+    this.v.ui.noteEditorWrap.classList.add('kp-hidden');
+    const at = this.noteAt(m.id);
+    const html_ = W.sanitizeNoteHtml(this.quill?.root.innerHTML || '');
+    if (!at || html_ === at.note.html) return;
+    at.note.html = html_;
+    this.town.rebuildNotes(m.regionId);
+    this.v.worldChanged();
+    this.v.invalidate();
+  }
+
+  private closeNoteEditor() {
+    if (!this.noteModal) return;
+    this.noteModal = null;
+    this.v.ui.noteEditorWrap?.classList.add('kp-hidden');
+  }
+
   private startPlacing(tplId: string) {
     const v = this.v, region = this.region;
     const name = ((v.ui.newName as HTMLInputElement)?.value || '').trim() || t('新宫殿 {n}', { n: region.palaces.length + 1 });
@@ -1379,8 +1867,11 @@ export class TownController {
   /** 捕获阶段的 pointerdown；返回 true 表示接管（不平移视角） */
   onPointerDown(e: PointerEvent): boolean {
     if (e.button !== 0) return false;
+    // 便签四角的句柄自己处理 pointerdown（拖角改尺寸），不要当成画布上的拖动
+    if ((e.target as HTMLElement)?.closest?.('.kp-note-handle')) return false;
     if (this.placing) { this.placing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (this.propPlacing) { this.propPlacing.down = { x: e.clientX, y: e.clientY }; return false; }
+    if (this.notePlacing) { this.notePlacing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (!this.editing) return false;
     const v = this.v;
     if (v.far) {
@@ -1394,11 +1885,16 @@ export class TownController {
       this.drag = { kind: 'region', id: rid, offset: [-g[0], -g[1]], orig: [...o] as Vec2, before: this.snapshot(), valid: true, moved: false };
     } else {
       const hit = this.pickPropOrPalace(e);
-      const region = hit.prop && this.regionById(hit.prop.regionId);
-      const prop = hit.prop && region ? W.findProp(region, hit.prop.propId) : null;
+      const regionId = hit.note?.regionId || hit.prop?.regionId;
+      const region = regionId ? this.regionById(regionId) : undefined;
       const layer = region && this.layerOf(region.id);
       const g = layer && this.town.groundOf(this.ray(e), layer);
-      if (prop && region && layer && g) {
+      const note = hit.note && region ? W.findNote(region, hit.note.noteId) : null;
+      const prop = hit.prop && region ? W.findProp(region, hit.prop.propId) : null;
+      if (note && region && layer && g) {
+        this.selectNote(note.id);
+        this.drag = { kind: 'note', regionId: region.id, noteId: note.id, offset: [note.pos[0] - g[0], note.pos[1] - g[1]], orig: [...note.pos] as Vec2, before: this.snapshot(), valid: true, moved: false };
+      } else if (prop && region && layer && g) {
         // 摆设：指针下的那个更近，或者这一路上根本没有宫殿外壳
         this.selectProp(prop.id);
         this.drag = { kind: 'prop', regionId: region.id, propId: prop.id, offset: [prop.pos[0] - g[0], prop.pos[1] - g[1]], orig: [...prop.pos] as Vec2, before: this.snapshot(), valid: true, moved: false };
@@ -1416,7 +1912,9 @@ export class TownController {
   }
 
   onPointerMove(e: PointerEvent): boolean {
+    if (this.noteResize) { this.moveNoteResize(e); return true; }
     if (this.propPlacing && !e.buttons) { this.movePropPlacing(e); return true; }
+    if (this.notePlacing && !e.buttons) { this.moveNotePlacing(e); return true; }
     if (this.placing && !e.buttons) { this.movePlacing(e); return true; }
     const d = this.drag;
     if (!d) return false;
@@ -1433,6 +1931,22 @@ export class TownController {
         d.valid = this.regionFits(r);
         d.moved = true;
         layer.tag.element.classList.toggle('kp-bad', !d.valid);
+        this.v.invalidate();
+      }
+      return true;
+    }
+    if (d.kind === 'note') {
+      const region = this.regionById(d.regionId), layer = this.layerOf(d.regionId);
+      const note = region && W.findNote(region, d.noteId);
+      const ng = this.regionGround(e, d.regionId);
+      if (!note || !region || !layer || !ng) return true;
+      const next: Vec2 = this.snapPoint([ng[0] + d.offset[0], ng[1] + d.offset[1]], e.altKey);
+      if (next[0] !== note.pos[0] || next[1] !== note.pos[1]) {
+        note.pos = next;
+        this.town.moveNotePreview(d.regionId, d.noteId, next, note.rot || 0);
+        d.valid = layer.onLand(next[0], next[1], 1.2);
+        d.moved = true;
+        this.updateMarker(d.valid);
         this.v.invalidate();
       }
       return true;
@@ -1469,6 +1983,16 @@ export class TownController {
   }
 
   onPointerUp(e: PointerEvent): boolean {
+    if (this.noteResize) { this.endNoteResize(); return true; }
+    const np = this.notePlacing;
+    if (np) {
+      const down = np.down;
+      np.down = null;
+      if (!down || e.button !== 0 || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return !!down;
+      this.moveNotePlacing(e);
+      this.commitNotePlacing();
+      return true;
+    }
     const pp = this.propPlacing;
     if (pp) {
       const down = pp.down;
@@ -1504,6 +2028,23 @@ export class TownController {
           this.v.host.notify?.(t('离其他岛太近了，岛和岛之间要留出一片海'));
         }
       }
+      this.v.invalidate();
+      return true;
+    }
+    if (d.kind === 'note') {
+      const region = this.regionById(d.regionId);
+      const note = region && W.findNote(region, d.noteId);
+      if (note && region && d.moved) {
+        if (d.valid) {
+          this.pushUndo(d.before);
+          this.v.worldChanged();
+        } else {
+          note.pos = d.orig;
+          this.town.moveNotePreview(d.regionId, d.noteId, d.orig, note.rot || 0);
+          this.v.host.notify?.(t('便签要落在岛上'));
+        }
+      }
+      this.updateMarker();
       this.v.invalidate();
       return true;
     }
@@ -1560,7 +2101,10 @@ export class TownController {
     if (this.editing && mod && k === 'd' && !this.v.far && this.selectedProp) { this.duplicateProp(); return true; }
     if (mod) return false;
     if (k === 'escape') {
-      if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
+      if (this.noteLive) this.commitNoteLive();
+      else if (this.noteModal) this.closeNoteEditor();
+      else if (this.notePlacing) { this.cancelNotePlacing(); this.setEditing(true); }
+      else if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
       else if (this.placing) this.cancelPlacing();
       else if (this.panel) this.closePanel();
       else if (this.editing) this.setEditing(false);
@@ -1570,14 +2114,15 @@ export class TownController {
       else return false;
       return true;
     }
-    if (k === 'r' && !this.v.far && (this.editing || this.placing || this.propPlacing)) { this.rotateSelected(); return true; }
-    if (k === 'a' && this.editing && !this.v.far && !this.propPlacing) { this.openPropPanel(); return true; }
-    if (k === 'b' && !this.placing && !this.propPlacing) { this.setEditing(!this.editing); return true; }
+    if (k === 'r' && !this.v.far && (this.editing || this.placing || this.propPlacing || this.notePlacing)) { this.rotateSelected(); return true; }
+    if (k === 'a' && this.editing && !this.v.far && !this.propPlacing && !this.notePlacing) { this.openPropPanel(); return true; }
+    if (k === 'b' && !this.placing && !this.propPlacing && !this.notePlacing) { this.setEditing(!this.editing); return true; }
     if (k === 'enter' && !this.editing) {
       if (this.v.far && this.selectedRegion) { this.v.flyToRegion(this.selectedRegion); return true; }
       if (!this.v.far && this.selectedId) { this.v.enterPalace(this.selectedId); return true; }
     }
     if ((k === 'delete' || k === 'backspace') && this.editing && !this.v.far) {
+      if (this.selectedNote) { void this.deleteNote(); return true; }
       if (this.selectedProp) { this.deleteProp(); return true; }
       if (this.selectedId) { void this.deletePalace(this.selectedId); return true; }
     }
@@ -1605,7 +2150,9 @@ export class TownController {
       case 'pickTemplate': this.startPlacing(el.dataset.tpl); return true;
       case 'pickTheme': this.createIsland(el.dataset.theme); return true;
       case 'townPlaceCancel':
-        if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); } else this.cancelPlacing();
+        if (this.notePlacing) { this.cancelNotePlacing(); this.setEditing(true); }
+        else if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
+        else this.cancelPlacing();
         return true;
       case 'townEdit': this.setEditing(true); return true;
       case 'townEditDone': this.setEditing(false); return true;
@@ -1619,6 +2166,34 @@ export class TownController {
       case 'propRotate': this.rotateSelected(); return true;
       case 'propDuplicate': this.duplicateProp(); return true;
       case 'propDelete': this.deleteProp(); return true;
+      case 'noteAdd': this.startNotePlacing(); return true;
+      case 'noteDeselect': this.selectNote(null); return true;
+      case 'noteColor': {
+        const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+        if (at) this.editNote({ color: (at.note.color + 1) % W.NOTE_COLORS.length });
+        return true;
+      }
+      case 'noteSize': {
+        const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+        if (at) this.editNote({ fs: clampNum(at.note.fs + Number(el.dataset.d) * W.NOTE_FS.step, W.NOTE_FS.min, W.NOTE_FS.max) });
+        return true;
+      }
+      case 'noteResize': {
+        const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
+        if (at) {
+          const d = Number(el.dataset.d) * W.NOTE_SIZE.step;
+          this.editNote({
+            w: clampNum(at.note.w + d, W.NOTE_SIZE.min, W.NOTE_SIZE.max),
+            h: clampNum(at.note.h + d, W.NOTE_SIZE.min, W.NOTE_SIZE.max),
+          });
+        }
+        return true;
+      }
+      case 'noteRotate': this.rotateSelected(); return true;
+      case 'noteEdit': if (this.selectedNote) void this.openNoteEditor(this.selectedNote); return true;
+      case 'noteDelete': void this.deleteNote(); return true;
+      case 'noteEditorSave': this.saveNoteEditor(); return true;
+      case 'noteEditorCancel': this.closeNoteEditor(); return true;
       case 'regionDeselect': this.selectRegion(null); return true;
       case 'toWorld': this.select(null); v.flyToWorld(); return true;
       case 'toPlanet': this.select(null); this.selectRegion(null); v.flyToPlanet(); return true;

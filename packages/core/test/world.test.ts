@@ -164,3 +164,115 @@ describe('世界：岛上的摆设', () => {
     }
   });
 });
+
+describe('世界：岛上的便签', () => {
+  const base = () => {
+    const w = W.createWorld();
+    w.regions = [{ id: 'r', name: '岛', theme: 'island', seed: 7, origin: [0, 0], palaces: [] }];
+    return w;
+  };
+
+  it('notes 原样读写：顺序、位置、尺寸、颜色、字号、朝向都保留', () => {
+    const w = base();
+    w.regions[0].notes = [
+      { id: 'a', pos: [1.25, -3], rot: 90, w: 3, h: 2, color: 2, fs: .25, html: '<p>hi</p>' },
+      { id: 'b', pos: [2, 4], w: 2, h: 1.5, color: 0, fs: .2, html: '' },
+    ];
+    const out = W.normalizeWorld(w);
+    const notes = out.regions[0].notes!;
+    expect(notes.map(n => n.id)).toEqual(['a', 'b']);
+    expect(notes[0].pos).toEqual([1.25, -3]);
+    expect(notes[0].rot).toBe(90);
+    expect(notes[0]).toMatchObject({ w: 3, h: 2, color: 2, fs: .25 });
+    expect(notes[1].rot).toBeUndefined();
+  });
+
+  it('坏掉的便签条目被丢掉，尺寸 / 颜色 / 字号夹到合法范围', () => {
+    const raw: unknown = {
+      ...base(),
+      regions: [{
+        id: 'r', name: '岛', theme: 'island', seed: 7, origin: [0, 0], palaces: [],
+        notes: [
+          { id: 'ok', pos: [1, 2] },
+          { pos: ['x', 2] },                 // pos 不是数
+          { pos: [NaN, 2] },
+          'nope', null, [1, 2],              // 根本不是对象
+          { id: 'big', pos: [0, 0], w: 999, h: -5, color: 99, fs: 9 },
+        ],
+      }],
+    };
+    const out = W.normalizeWorld(raw);
+    const notes = out.regions[0].notes!;
+    expect(notes.map(n => n.id)).toEqual(['ok', 'big']);
+    expect(notes[0].w).toBe(W.NOTE_NEW.w);
+    expect(notes[0].fs).toBe(W.NOTE_FS.def);
+    expect(notes[1].w).toBe(W.NOTE_SIZE.max);
+    expect(notes[1].h).toBe(W.NOTE_SIZE.min);
+    expect(notes[1].color).toBe(W.NOTE_COLORS.length - 1);
+    expect(notes[1].fs).toBe(W.NOTE_FS.max);
+  });
+
+  it('旧世界文件没有 notes：规范化后是空数组，版本 = 当前版本', () => {
+    const out = W.normalizeWorld({ ...base(), version: 1 });
+    expect(out.regions[0].notes).toEqual([]);
+    expect(out.version).toBe(W.WORLD_VERSION);
+    expect(out.compat).toBe(W.WORLD_COMPAT);
+  });
+
+  it('addNote / findNote / removeNote', () => {
+    const r: W.WorldRegion = { id: 'r', name: '岛', theme: 'island', seed: 1, palaces: [] };
+    expect(W.notesOf(r)).toEqual([]);
+
+    const n = W.addNote(r, [1.23456, 2.5], { w: 3, color: 1, html: '<p><b>x</b></p>' });
+    expect(n.id.startsWith('note-')).toBe(true);
+    expect(n.pos).toEqual([1.235, 2.5]);
+    expect(n.w).toBe(3);
+    expect(n.h).toBe(W.NOTE_NEW.h);
+    expect(n.color).toBe(1);
+    expect(n.html).toBe('<p><strong>x</strong></p>');   // 存进去就是清洗过的
+
+    expect(W.findNote(r, n.id)).toBe(n);
+    expect(W.findNote(r, 'nope')).toBeNull();
+    expect(W.removeNote(r, 'nope')).toBe(false);
+    expect(W.removeNote(r, n.id)).toBe(true);
+    expect(W.notesOf(r)).toEqual([]);
+    expect(W.notesOf(W.createRegion())).toEqual([]);    // 新建的岛自带空 notes
+  });
+
+  it('内容清洗：丢掉不在白名单里的标签 / 属性，保留粗斜下划线、标题、列表', () => {
+    expect(W.sanitizeNoteHtml('<p onclick="x()">hi<script>bad()</script><b>bold</b></p>')).toBe('<p>hi<strong>bold</strong></p>');
+    expect(W.sanitizeNoteHtml('<a href="javascript:alert(1)">x</a>')).not.toContain('javascript');
+    expect(W.sanitizeNoteHtml('<h2>标题</h2><ul><li>一</li><li>二</li></ul>')).toBe('<h2>标题</h2><ul><li>一</li><li>二</li></ul>');
+    expect(W.sanitizeNoteHtml('<u>u</u><em>i</em><a href="https://omp.sh">l</a>')).toBe('<p><u>u</u><em>i</em><a href="https://omp.sh">l</a></p>');
+    expect(W.sanitizeNoteHtml('<p><strong>hello</strong> <em>world</em></p>')).toBe('<p><strong>hello</strong> <em>world</em></p>');
+  });
+});
+
+describe('便签：贴地几何', () => {
+  const base = (rot = 0): W.PlacedNote => ({ id: 'n', pos: [3, -2], rot, w: 2, h: 1.5, color: 0, fs: .2, html: '' });
+
+  it('noteToWorld / noteLocal 互为逆', () => {
+    const n = base(90);
+    for (const [X, Z] of [[0, 0], [1, 0], [0, 1], [-1.2, .7], [.35, -.9]] as [number, number][]) {
+      const [x, z] = W.noteToWorld(n, X, Z);
+      const [X2, Z2] = W.noteLocal(n, x, z);
+      expect(X2).toBeCloseTo(X, 6);
+      expect(Z2).toBeCloseTo(Z, 6);
+    }
+  });
+
+  it('rot 0 时宽沿 +x、深沿 +z；rot 90 时宽沿 −z（和渲染时 rotation.y 的约定一致）', () => {
+    expect(W.noteToWorld(base(0), 1, 0)).toEqual([4, -2]);
+    expect(W.noteToWorld(base(0), 0, 1)).toEqual([3, -1]);
+    const [x90, z90] = W.noteToWorld(base(90), 1, 0);
+    expect(x90).toBeCloseTo(3, 6);
+    expect(z90).toBeCloseTo(-3, 6);
+  });
+
+  it('四个角是中心在 pos 的矩形，顺序固定为 [−X−Z, +X−Z, −X+Z, +X+Z]', () => {
+    const c = W.noteCorners(base(0));
+    expect(c).toEqual([[-1, -.75], [1, -.75], [-1, .75], [1, .75]]);
+    const [cx, cz] = W.noteToWorld(base(45), 0, 0);
+    expect([cx, cz]).toEqual([3, -2]);                    // 中心就是 pos
+  });
+});

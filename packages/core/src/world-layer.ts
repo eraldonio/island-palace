@@ -15,9 +15,15 @@ import { THEMES, getTheme, type ThemePack } from './themes';
 import { commonMats, GRASS_Y, WATER_Y, type Landmark, type Mats, type ThemeCtx } from './themes/common';
 import { bakeRegionProps, buildProp, registerProp } from './props';
 import {
-  PLAZA_R, bboxOf, frontDoor, indoorRects, palaceColor, palaceLot, palaceStats, placedLot, rectCenter, regionExtent, regionOrigin, rotateVec, toRegion,
+  PLAZA_R, bboxOf, frontDoor, indoorRects, notesOf, palaceColor, palaceLot, palaceStats, placedLot, rectCenter, regionExtent, regionOrigin, rotateVec, toRegion,
   type PalaceWorld, type PlacedPalace, type PlacedProp, type WorldRegion,
 } from './world';
+import { NoteLayer, type NoteHit } from './notes';
+
+export type { NoteHit } from './notes';
+
+/** 射线打中的便签：所在岛 + 便签 id；point 是世界坐标 */
+export interface NotePick { regionId: string; noteId: string; point: THREE.Vector3 }
 
 /* =====================================================================
  * 世界图层（群岛）
@@ -114,6 +120,8 @@ export class RegionLayer {
   private terrain: TerrainBase | null = null;
   /** 当前的夜间点亮系数（view.applyNight 给每盏灯乘的那个值）：重建出来的新灯要照它点亮 */
   private night = 0;
+  /** 岛上的便签（平铺在地面上）：自己一批，地形重建不影响它 */
+  private readonly noteLayer: NoteLayer;
 
   constructor(public region: WorldRegion, private W: WorldLayer) {
     this.theme = getTheme(region.theme);
@@ -122,6 +130,8 @@ export class RegionLayer {
     this.land.name = 'land';
     this.shellRoot.name = 'shells';
     this.group.add(this.land, this.shellRoot);
+    this.noteLayer = new NoteLayer(W.K);
+    this.group.add(this.noteLayer.group);
     const el = document.createElement('div');
     el.className = 'kp-region-tag';
     el.dataset.act = 'regionTag';
@@ -217,6 +227,7 @@ export class RegionLayer {
 
     if (landRaw.children.length) this.addBatch(landRaw, 'land-decor');
     this.rebuildDecor();
+    this.rebuildNotes();
     this.tag.position.set(cx, 9, cz);
   }
 
@@ -443,8 +454,38 @@ export class RegionLayer {
     return e ? e.box.clone().applyMatrix4(this.group.matrixWorld) : null;
   }
 
+  // =====================================================================
+  // 便签：和摆设同一套（按数据重建 / 射线拾取 / 拖动预览 / 世界包围盒）
+  // =====================================================================
+
+  /** 按数据重建这一批便签 */
+  rebuildNotes() {
+    this.noteLayer.rebuild(notesOf(this.region));
+  }
+
+  /** 区域局部坐标的一条射线打中的最近便签 */
+  pickNote(ray: THREE.Ray): NoteHit | null {
+    return this.noteLayer.pick(ray);
+  }
+
+  /** 拖动中的每帧变换 */
+  moveNote(noteId: string, pos: Vec2, rot: number) {
+    this.noteLayer.move(noteId, pos, rot);
+  }
+
+  /** 便签的世界包围盒（选中标记用） */
+  noteBox(noteId: string): THREE.Box3 | null {
+    return this.noteLayer.worldBox(noteId, this.group.matrixWorld);
+  }
+
+  /** 编辑中的便签只显示纸面（文字由 DOM 画在便签上，那样才清晰） */
+  paperNote(noteId: string, on: boolean) {
+    this.noteLayer.paper(noteId, on);
+  }
+
   dispose() {
     this.clearLand();
+    this.noteLayer.dispose();
     this.tag.element.remove();
     this.group.removeFromParent();
   }
@@ -844,6 +885,53 @@ export class WorldLayer {
   /** 摆设的世界包围盒（挂标记 / 命中反馈用） */
   propBox(regionId: string, propId: string): THREE.Box3 | null {
     return this.regions.get(regionId)?.boxOf(propId) ?? null;
+  }
+
+  // =====================================================================
+  // 岛上的便签
+  // =====================================================================
+
+  /** 射线打中的最近便签（和 pickProp 同一套预筛 / 坐标换算） */
+  pickNote(ray: THREE.Raycaster): NotePick | null {
+    const bent = BEND.k.value > 0;
+    let best: NotePick | null = null;
+    let bestD = Infinity;
+    for (const layer of this.regions.values()) {
+      if (!layer.group.visible) continue;
+      const g = this.groundOf(ray, layer);
+      if (!g || Math.hypot(g[0] - layer.center[0], g[1] - layer.center[1]) > layer.outerR) continue;
+      const mw = layer.group.matrixWorld;
+      const local = bent
+        ? new THREE.Ray(new THREE.Vector3(g[0], GRASS_Y + 60, g[1]), new THREE.Vector3(0, -1, 0))
+        : ray.ray.clone().applyMatrix4(mw.clone().invert());
+      const hit = layer.pickNote(local);
+      if (!hit) continue;
+      const d = local.origin.distanceToSquared(hit.point);
+      if (d >= bestD) continue;
+      bestD = d;
+      best = { regionId: layer.region.id, noteId: hit.noteId, point: hit.point.applyMatrix4(mw) };
+    }
+    return best;
+  }
+
+  /** 便签的数据变了（加 / 删 / 改）：重建那座岛上的便签 */
+  rebuildNotes(regionId: string) {
+    this.regions.get(regionId)?.rebuildNotes();
+  }
+
+  /** 拖动中的每帧变换（只动那一块平面） */
+  moveNotePreview(regionId: string, noteId: string, pos: Vec2, rot: number) {
+    this.regions.get(regionId)?.moveNote(noteId, pos, rot);
+  }
+
+  /** 便签的世界包围盒（选中标记用） */
+  noteBox(regionId: string, noteId: string): THREE.Box3 | null {
+    return this.regions.get(regionId)?.noteBox(noteId) ?? null;
+  }
+
+  /** 编辑中的便签只显示纸面（文字由 DOM 画） */
+  paperNote(regionId: string, noteId: string, on: boolean) {
+    this.regions.get(regionId)?.paperNote(noteId, on);
   }
 
   /**

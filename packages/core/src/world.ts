@@ -1,6 +1,9 @@
 import { cleanLook, type Look } from './look';
 import { gid, type PalaceDoc, type Rect, type Vec2 } from './schema';
 import { t } from './i18n';
+import { NOTE_COLORS, sanitizeNoteHtml } from './notes';
+
+export { NOTE_COLORS, NOTE_INK, NOTE_LIFT, NOTE_PPM, drawNote, noteCorners, noteLocal, notePaper, noteToWorld, parseNote, sanitizeNoteHtml } from './notes';
 
 /* =====================================================================
  * 世界数据：宫殿摆在哪里。
@@ -17,11 +20,12 @@ import { t } from './i18n';
  *   3  删除旅程 journeys 与数字编码表 pao（随记笔记功能一起去掉）；只是去掉可选字段，compat 仍为 1
  *   4  岛上的摆设 props（可以单独移动的树 / 石头 / 长椅……）；只是新增可选字段，compat 仍为 1。
  *      字段不存在 = 这座岛还没烘焙过（见 props.ts 的 bakeRegionProps），烘焙过才能单个移动。
+ *   5  岛上的便签 notes（平铺在地面上的 w×h 卡片，内容是一小段清洗过的富文本）；新增可选字段，compat 仍为 1。
  * ===================================================================== */
 
 /** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的世界文件仍然认得出来（同 PALACE_FORMAT） */
 export const WORLD_FORMAT = 'kmind-palace-world';
-export const WORLD_VERSION = 4;
+export const WORLD_VERSION = 5;
 /** 读取本版本写出的世界数据至少需要的版本（规则同 PALACE_COMPAT） */
 export const WORLD_COMPAT = 1;
 
@@ -52,6 +56,25 @@ export interface PlacedProp {
   params?: Record<string, unknown>;
 }
 
+/**
+ * 岛上的一张便签：平铺在地面上的 w×h 米卡片。
+ * 内容是清洗过的富文本（见 notes.ts 的 sanitizeNoteHtml），颜色是 NOTE_COLORS 的序号。
+ */
+export interface PlacedNote {
+  id: string;
+  /** 便签**中心**在区域平面上的位置（米）：贴地平面的中心，四角 = pos ± (w/2, h/2) 绕 rot 旋转 */
+  pos: Vec2;
+  rot?: number;
+  /** 基础尺寸（米），可调 */
+  w: number;
+  h: number;
+  /** NOTE_COLORS 的序号 */
+  color: number;
+  /** 地面预览的字号（米） */
+  fs: number;
+  html: string;
+}
+
 export interface WorldRegion {
   id: string;
   name: string;
@@ -65,6 +88,8 @@ export interface WorldRegion {
   palaces: PlacedPalace[];
   /** 岛上的摆设：烘焙过才有（没有 = 还没烘焙，装饰仍由主题程序化生成） */
   props?: PlacedProp[];
+  /** 岛上的便签（见 notes.ts）：平铺在地面上，和摆设一样是可单独拾取 / 移动的元素 */
+  notes?: PlacedNote[];
 }
 
 export interface PalaceWorld {
@@ -82,6 +107,11 @@ export interface PalaceWorld {
 
 /** 宫殿主题色（名牌圆点、屋顶） */
 export const PALACE_COLORS = ['#c46d4d', '#3e4d66', '#5f7a6c', '#b8563c', '#6d4a3a', '#8a6aa0', '#c9973f', '#4f7f8a', '#9a5b6e', '#6b7a3e'];
+
+/** 便签：新便签的默认尺寸（米）、尺寸可调范围、地面预览的字号范围（米）；纸色见 notes.ts */
+export const NOTE_NEW = { w: 2, h: 1.5 };
+export const NOTE_SIZE = { min: 1, max: 6, step: .5 };
+export const NOTE_FS = { min: .1, max: .5, step: .05, def: .2 };
 
 /** 小镇中心广场的半径（宫殿不能压到广场） */
 export const PLAZA_R = 6;
@@ -109,7 +139,7 @@ export function createWorld(): PalaceWorld {
 }
 
 export function createRegion(name = t('岛上小镇'), theme = 'island', origin: Vec2 = [0, 0]): WorldRegion {
-  return { id: gid('region-'), name, theme, seed: Math.floor(Math.random() * 1e6), origin, createdAt: Date.now(), palaces: [] };
+  return { id: gid('region-'), name, theme, seed: Math.floor(Math.random() * 1e6), origin, createdAt: Date.now(), palaces: [], notes: [] };
 }
 
 /** 各主题的默认岛名（模块常量，显示 / 使用时再 t()） */
@@ -167,6 +197,39 @@ function normProps(raw: unknown): PlacedProp[] | undefined {
   return out;
 }
 
+/**
+ * 读取便签：逐条规范化（位置 / 尺寸 / 颜色 / 字号都夹到合法范围），坏掉的条目丢掉。
+ * 字段不存在（旧世界文件）时是空数组——便签和 props 不一样，没有「没烘焙」这个状态。
+ */
+function normNotes(raw: unknown): PlacedNote[] {
+  if (!Array.isArray(raw)) return [];
+  const clamp = (v: unknown, lo: number, hi: number, def: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const out: PlacedNote[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const it = item as Record<string, unknown>;
+    const pos = it.pos;
+    const x = Array.isArray(pos) ? Number(pos[0]) : NaN, z = Array.isArray(pos) ? Number(pos[1]) : NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    const note: PlacedNote = {
+      id: typeof it.id === 'string' && it.id ? it.id : gid('note-'),
+      pos: [r3(x), r3(z)],
+      w: clamp(it.w, NOTE_SIZE.min, NOTE_SIZE.max, NOTE_NEW.w),
+      h: clamp(it.h, NOTE_SIZE.min, NOTE_SIZE.max, NOTE_NEW.h),
+      color: Math.abs(Math.trunc(clamp(it.color, 0, NOTE_COLORS.length - 1, 0))) % NOTE_COLORS.length,
+      fs: clamp(it.fs, NOTE_FS.min, NOTE_FS.max, NOTE_FS.def),
+      html: sanitizeNoteHtml(typeof it.html === 'string' ? it.html : ''),
+    };
+    const rot = Number(it.rot);
+    if (Number.isFinite(rot)) note.rot = r3(rot);
+    out.push(note);
+  }
+  return out;
+}
+
 /** 校验并规范化外部数据；无法识别时抛出错误 */
 export function normalizeWorld(raw: unknown): PalaceWorld {
   const w = raw as PalaceWorld;
@@ -185,6 +248,7 @@ export function normalizeWorld(raw: unknown): PalaceWorld {
     const props = normProps(r.props);
     if (props) region.props = props;
     else delete region.props;
+    region.notes = normNotes(r.notes);
     return region;
   });
   if (!regions.length) regions.push(createRegion());
@@ -541,4 +605,39 @@ export function nudgePropOutOfLot(p: PlacedProp, lot: Rect): void {
   else if (near === right) p.pos[0] = lot[2] + PROP_PAD;
   else if (near === top) p.pos[1] = lot[1] - PROP_PAD;
   else p.pos[1] = lot[3] + PROP_PAD;
+}
+
+// =====================================================================
+// 岛上的便签：平铺在地面上的卡片（形状见 notes.ts）
+// =====================================================================
+
+/** 岛上的便签；字段不存在（旧世界文件）时是空数组 */
+export function notesOf(r: WorldRegion): PlacedNote[] {
+  return r.notes || [];
+}
+
+export function findNote(r: WorldRegion, id: string): PlacedNote | null {
+  return notesOf(r).find(n => n.id === id) || null;
+}
+
+/** 加一张便签；init 里可以带 w / h / color / fs / html，缺省就是默认值 */
+export function addNote(r: WorldRegion, pos: Vec2, init: Partial<PlacedNote> = {}): PlacedNote {
+  const note: PlacedNote = {
+    id: gid('note-'),
+    pos: [r3(pos[0]), r3(pos[1])],
+    w: NOTE_NEW.w, h: NOTE_NEW.h, color: 0, fs: NOTE_FS.def, html: '',
+    ...init,
+  };
+  note.html = sanitizeNoteHtml(note.html);
+  (r.notes || (r.notes = [])).push(note);
+  return note;
+}
+
+export function removeNote(r: WorldRegion, id: string): boolean {
+  const list = r.notes;
+  if (!list) return false;
+  const i = list.findIndex(n => n.id === id);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  return true;
 }

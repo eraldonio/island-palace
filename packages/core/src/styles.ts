@@ -414,6 +414,33 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-root .kp-pet-acc button { padding: 4px 9px; border-radius: 9px; background: rgba(127, 110, 90, .12); font-size: 12px; }
 .kp-root .kp-pet-acc button.kp-on { background: var(--kp-accent); color: #fff; }
 .kp-route-sub small { font-weight: 400; color: var(--kp-ink-2); margin-left: 4px; }
+
+/* ── 便签：直接写在便签上的 DOM、四角的缩放句柄、富文本模态 ─────────── */
+.kp-dot { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 6px; vertical-align: -1px; box-shadow: inset 0 0 0 1px rgba(60, 45, 25, .25); }
+.kp-note-live {
+  position: absolute; left: 0; top: 0; z-index: 30; transform-origin: 0 0; overflow: hidden;
+  color: #2b2b2b; line-height: 1.34; cursor: text;
+}
+.kp-note-live.kp-hidden { display: none; }
+.kp-note-live-box {
+  width: 100%; height: 100%; outline: none; overflow: hidden; white-space: pre-wrap;
+  user-select: text; -webkit-user-select: text;
+}
+.kp-note-live-box a { color: #1a5fb4; }
+.kp-note-handles { position: absolute; inset: 0; z-index: 31; pointer-events: none; }
+.kp-note-handles.kp-hidden { display: none; }
+.kp-note-handle {
+  position: absolute; width: 13px; height: 13px; margin: -7px 0 0 -7px; border-radius: 4px;
+  background: #fff; box-shadow: 0 0 0 1.5px var(--kp-accent), 0 1px 4px rgba(40, 25, 10, .3);
+  pointer-events: auto; cursor: nwse-resize;
+}
+.kp-note-handle[data-corner="1"], .kp-note-handle[data-corner="2"] { cursor: nesw-resize; }
+.kp-note-modal { width: min(560px, 100%); max-height: 82vh; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; }
+.kp-note-editor { min-height: 180px; max-height: 56vh; overflow: auto; background: #fffdf7; color: #2b2b2b; border-radius: 12px; }
+.kp-note-editor .ql-container { border: 0; font-size: 14px; font-family: inherit; }
+.kp-note-editor .ql-editor { min-height: 180px; }
+.kp-note-editor .ql-toolbar { border-radius: 12px 12px 0 0; }
+.kp-root.kp-note-editing .kp-card, .kp-root.kp-note-editing .kp-bar { display: none; }
 `;
 
 export function ensureStyles(doc: Document = document) {
