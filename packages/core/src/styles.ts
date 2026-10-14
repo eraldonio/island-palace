@@ -452,6 +452,11 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-note-editor .ql-editor { min-height: 180px; }
 .kp-note-editor .ql-toolbar { border-radius: 12px 12px 0 0; }
 .kp-root.kp-note-editing .kp-card, .kp-root.kp-note-editing .kp-bar { display: none; }
+.kp-marquee {
+  position: absolute; border: 1.5px solid var(--kp-accent); background: rgba(239, 130, 53, .16);
+  border-radius: 2px; pointer-events: none; z-index: 25;
+}
+.kp-marquee.kp-hidden { display: none; }
 `;
 
 export function ensureStyles(doc: Document = document) {

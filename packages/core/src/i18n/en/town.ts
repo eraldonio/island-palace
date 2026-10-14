@@ -192,4 +192,14 @@ export const town: Record<string, string> = {
   '按住拖动扩建陆地（也可按住 <b>Alt / ⌥</b> 临时削减）': 'Drag to expand land (or hold <b>Alt / ⌥</b> to carve)',
   '按住拖动削减内凹海湾（也可松开 <b>Alt</b> 扩建）': 'Drag to carve bays (or release <b>Alt</b> to expand)',
   '<b>岛屿捏形</b>：在水面上按住拖动扩建陆地 · 按住 <b>Alt / ⌥</b> 拖动削减内凹 · <b>Esc</b> 完成': '<b>Island Sculpt</b>: drag on water to expand land · hold <b>Alt / ⌥</b> to carve bays · <b>Esc</b> to finish',
+  // ---------- 多选与框选操作 ----------
+  '多选': 'Multi-selection',
+  '已选 {n} 个物件': '{n} items selected',
+  '批量旋转 90°（R）': 'Batch rotate 90° (R)',
+  '批量复制（⌘D）': 'Batch duplicate (⌘D)',
+  '批量删除选中的物件': 'Delete selected items',
+  '删除选中的 {n} 个物件？': 'Delete {n} selected items?',
+  '选中的物件删除后无法撤销。': 'Deleting selected items cannot be undone.',
+  '已删除 {n} 个物件': 'Deleted {n} items',
+  '部分物件超出了陆地范围': 'Some items were moved outside the land boundary',
 };
