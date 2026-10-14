@@ -108,30 +108,191 @@ function boat(ctx: ThemeCtx, x: number, y: number, z: number, rot = 0) {
   return b;
 }
 
+// ---------------- 树 ----------------
+
+/** 树冠轮廓（参数 shape）：圆冠 / 高冠 / 伞冠 / 疏冠 */
+const TREE_SHAPES: [number, string][] = [[0, '圆冠'], [1, '高冠'], [2, '伞冠'], [3, '疏冠']];
+
+/** 树冠团的配色：以叶色为基色往上取相邻两档，一团一个色（和主题的材质表同一套绿） */
+function canopyTones(leaf: number) {
+  const n = LEAF_NAMES.length;
+  const base = ((Math.round(leaf) % n) + n) % n;
+  return [0, 1, 2].map(k => (base + k) % n);
+}
+
+/**
+ * 低多边形阔叶树：带锥度的树干 + 几团二十面体树冠。
+ * 高度 / 树冠宽度 w / 树干粗细 trunk / 叶色 tones / 轮廓 shape 全由参数定；
+ * 随机的是每团的偏角和半径（调用方要先按 params.seed 定位随机流）。
+ * 返回根节点和树干尺寸（白桦要在树干上贴斑纹）。
+ */
+function leafTree(ctx: ThemeCtx, o: { h: number; w: number; trunk: number; tones: number[]; shape: number; ratio?: number; bark?: THREE.Material }) {
+  const { K } = ctx;
+  const g = new THREE.Group();
+  const th = o.h * (o.ratio ?? .52), r0 = o.h * .042 * o.trunk;
+  const trunk = K.mesh(new THREE.CylinderGeometry(r0 * .62, r0, th, 7), o.bark ?? K.M.bark);
+  trunk.position.y = th / 2;
+  g.add(trunk);
+  const spread = o.h * (.06 + .18 * o.w);
+  const blobs = o.shape === 3 ? 5 : 8;
+  for (let i = 0; i < blobs; i++) {
+    // 黄金角排布：团与团之间自然错开，不会叠成一根糖葫芦
+    const a = i * 2.39996 + rr(-.35, .35);
+    const t = i / Math.max(1, blobs - 1);
+    let y = 0, rad = 0, r = 0, squash = 1;
+    if (o.shape === 1) {           // 高冠：越往上越细
+      y = th * .78 + (o.h - th * .78) * (.15 + t * .8);
+      rad = spread * (1 - t * .72);
+      r = o.h * (.1 + .1 * (1 - t));
+    } else if (o.shape === 2) {    // 伞冠：低而平，向四周撑开
+      y = th * .8 + o.h * .07 + rr(-.03, .03) * o.h;
+      rad = spread * (1.05 + rr(-.15, .15));
+      r = o.h * rr(.15, .2);
+      squash = .62;
+    } else if (o.shape === 3) {    // 疏冠：几团小而散，看得见树干
+      y = th * .72 + o.h * (.12 + .3 * rand());
+      rad = spread * (.45 + 1.05 * rand());
+      r = o.h * rr(.1, .14);
+    } else {                       // 圆冠：团成一顶
+      y = th * .76 + o.h * (.08 + Math.sin(t * Math.PI) * .16);
+      rad = spread * Math.sin(t * Math.PI) * .95;
+      r = o.h * rr(.15, .21);
+    }
+    const m = K.ico(g, r, leafMat(ctx, o.tones[i % o.tones.length]), Math.cos(a) * rad, y, Math.sin(a) * rad, 1);
+    if (squash !== 1) m.scale.y = squash;
+  }
+  return { g, trunkR: r0, trunkH: th };
+}
+
 const KINDS: PropKind[] = [
   // ---------------- 植物 ----------------
   {
     kind: 'tree', name: '树', category: '植物',
-    params: [pnum('h', '高度', 1.5, 8, .1, 3.2), psel('variant', '树冠', [[0, '深绿'], [1, '橄榄'], [2, '墨绿']], 0)],
+    params: [pnum('h', '高度', 1.5, 8, .1, 3.2), psel('shape', '树冠', TREE_SHAPES, 0), pnum('w', '树冠宽度', .6, 1.6, .05, 1), pnum('trunk', '树干粗细', .6, 1.8, .05, 1), psel('leaf', '叶色', LEAF_TONES, LEAF.leaf)],
     build(ctx, p) {
-      // 目录里的树自己会用随机流摆树冠，所以先按 params.seed 定位
+      const h = num(p.h, 3.2);
       seed(num(p.seed, 1));
-      return ctx.catalog.tree.build({ h: num(p.h, 3.2), variant: num(p.variant, 0) });
+      // 老存档只有 h + variant：照旧用目录里那棵树，样子不变
+      if (p.shape === undefined && p.leaf === undefined && p.variant !== undefined) return ctx.catalog.tree.build({ h, variant: num(p.variant, 0) });
+      return leafTree(ctx, { h, w: num(p.w, 1), trunk: num(p.trunk, 1), tones: canopyTones(num(p.leaf, LEAF.leaf)), shape: num(p.shape, 0) }).g;
+    },
+  },
+  {
+    kind: 'broadleaf', name: '阔叶树', category: '植物',
+    params: [pnum('h', '高度', 2, 9, .1, 4.6), psel('shape', '树冠', TREE_SHAPES, 0), pnum('w', '树冠宽度', .6, 1.6, .05, 1.25), pnum('trunk', '树干粗细', .6, 1.8, .05, 1.2), psel('leaf', '叶色', LEAF_TONES, LEAF.leafDark), pnum('lean', '倾斜', 0, .3, .01, 0)],
+    build(ctx, p) {
+      seed(num(p.seed, 1));
+      const t = leafTree(ctx, { h: num(p.h, 4.6), w: num(p.w, 1.25), trunk: num(p.trunk, 1.2), tones: canopyTones(num(p.leaf, LEAF.leafDark)), shape: num(p.shape, 0), ratio: .46 });
+      t.g.rotation.z = num(p.lean);
+      return t.g;
+    },
+  },
+  {
+    kind: 'birch', name: '白桦', category: '植物',
+    params: [pnum('h', '高度', 2, 9, .1, 5.4), pnum('w', '树冠宽度', .5, 1.4, .05, .85), pnum('lean', '弯曲', 0, .3, .01, .08), psel('leaf', '叶色', LEAF_TONES, LEAF.leafLight)],
+    build(ctx, p) {
+      seed(num(p.seed, 1));
+      const { K } = ctx;
+      const t = leafTree(ctx, { h: num(p.h, 5.4), w: num(p.w, .85), trunk: .55, tones: canopyTones(num(p.leaf, LEAF.leafLight)), shape: 3, ratio: .66, bark: K.M.linen });
+      // 树皮上的横斑：白桦最好认的一处
+      for (let i = 0; i < 4; i++) {
+        const ring = K.mesh(new THREE.CylinderGeometry(t.trunkR * rr(1.03, 1.14), t.trunkR * rr(1.03, 1.14), t.trunkH * .022, 7), K.M.charcoal);
+        ring.position.set(rr(-.012, .012), t.trunkH * rr(.12, .85), rr(-.012, .012));
+        t.g.add(ring);
+      }
+      t.g.rotation.z = num(p.lean, .08);
+      return t.g;
+    },
+  },
+  {
+    kind: 'palm', name: '棕榈', category: '植物',
+    params: [pnum('h', '高度', 2, 7, .1, 4.2), pnum('fronds', '叶片数', 4, 10, 1, 7), pnum('lean', '弯曲', 0, .5, .02, .16), psel('leaf', '叶色', LEAF_TONES, LEAF.leafOlive)],
+    build(ctx, p) {
+      seed(num(p.seed, 1));
+      const { K } = ctx;
+      const h = num(p.h, 4.2), n = Math.max(3, Math.round(num(p.fronds, 7))), lean = num(p.lean, .16);
+      const g = new THREE.Group();
+      // 树干：几段越来越歪的圆柱接成一条弧
+      const segs = 5;
+      let px = 0, py = 0;
+      for (let i = 0; i < segs; i++) {
+        const t = i / segs, a = lean * (t + .5), len = h / segs * (1 - t * .22);
+        const seg = K.mesh(new THREE.CylinderGeometry(h * .035 * (1 - (t + 1 / segs) * .5), h * .035 * (1 - t * .5), len, 6), K.M.bark);
+        seg.position.set(px + Math.sin(a) * len * .5, py + Math.cos(a) * len * .5, 0);
+        seg.rotation.z = -a;
+        g.add(seg);
+        px += Math.sin(a) * len; py += Math.cos(a) * len;
+      }
+      const top = new THREE.Group();
+      top.position.set(px, py, 0);
+      g.add(top);
+      const mat = leafMat(ctx, num(p.leaf, LEAF.leafOlive));
+      const up = new THREE.Vector3(0, 1, 0);
+      for (let i = 0; i < n; i++) {
+        const a = i / n * Math.PI * 2 + rr(-.25, .25);
+        const len = h * rr(.34, .46), drop = rr(.35, .8);
+        const dir = new THREE.Vector3(Math.cos(a), -drop, Math.sin(a)).normalize();
+        const frond = K.mesh(new THREE.ConeGeometry(len * .17, len, 4), mat);
+        frond.scale.z = .3;  // 压成叶片
+        frond.position.copy(dir).multiplyScalar(len * .5);
+        frond.quaternion.setFromUnitVectors(up, dir);
+        top.add(frond);
+      }
+      for (let i = 0; i < 3; i++) {
+        const a = i / 3 * Math.PI * 2 + rr(-.3, .3);
+        K.ball(top, h * .045, K.M.walnut, Math.cos(a) * h * .07, -h * .02, Math.sin(a) * h * .07, [1, 1, 1], 10);
+      }
+      return g;
+    },
+  },
+  {
+    kind: 'dead-tree', name: '枯树', category: '植物',
+    params: [pnum('h', '高度', 1.5, 7, .1, 3.6), pnum('branches', '分叉', 3, 8, 1, 5)],
+    build(ctx, p) {
+      seed(num(p.seed, 1));
+      const { K } = ctx;
+      const h = num(p.h, 3.6), n = Math.max(1, Math.round(num(p.branches, 5))), th = h * .56;
+      const up = new THREE.Vector3(0, 1, 0);
+      const g = new THREE.Group();
+      const trunk = K.mesh(new THREE.CylinderGeometry(h * .028, h * .05, th, 6), K.M.bark);
+      trunk.position.y = th / 2;
+      g.add(trunk);
+      for (let i = 0; i < n; i++) {
+        const t = i / n;
+        const a = i * 2.39996 + rr(-.4, .4), y = th * (.55 + .45 * t);
+        const len = h * rr(.16, .3) * (1 - t * .5), tilt = rr(.5, 1.05);
+        const dir = new THREE.Vector3(Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt));
+        const br = K.mesh(new THREE.CylinderGeometry(h * .008, h * .018, len, 5), K.M.bark);
+        br.position.set(dir.x * len * .5, y + dir.y * len * .5, dir.z * len * .5);
+        br.quaternion.setFromUnitVectors(up, dir);
+        g.add(br);
+        if (rand() < .7) {  // 枝尖再分一根小杈
+          const d2 = new THREE.Vector3(dir.x * rr(.3, .9) + rr(-.5, .5), rr(.5, 1), dir.z * rr(.3, .9) + rr(-.5, .5)).normalize();
+          const l2 = len * rr(.45, .7);
+          const tw = K.mesh(new THREE.CylinderGeometry(h * .004, h * .011, l2, 4), K.M.bark);
+          tw.position.set(dir.x * len + d2.x * l2 * .5, y + dir.y * len + d2.y * l2 * .5, dir.z * len + d2.z * l2 * .5);
+          tw.quaternion.setFromUnitVectors(up, d2);
+          g.add(tw);
+        }
+      }
+      return g;
     },
   },
   {
     kind: 'conifer', name: '针叶树', category: '植物',
-    params: [pnum('h', '高度', 2, 6, .1, 4), psel('leaf', '颜色', [['pine', '深绿'], ['pineLight', '浅绿']], 'pine')],
+    params: [pnum('h', '高度', 2, 8, .1, 4), pnum('tiers', '层数', 2, 6, 1, 3), pnum('spread', '树冠宽度', .6, 1.5, .05, 1), psel('leaf', '颜色', [['pine', '深绿'], ['pineLight', '浅绿'], ['leafDark', '墨绿'], ['leafOlive', '橄榄绿']], 'pine'), psel('snow', '积雪', [[false, '无雪'], [true, '积雪']], false)],
     build(ctx, p) {
       const { K, mats } = ctx;
-      const h = num(p.h, 4), tiers = 3;
-      const leaf = mats[str(p.leaf, 'pine')] || mats.pine;
+      const h = num(p.h, 4), spread = num(p.spread, 1);
       const spin: unknown[] = Array.isArray(p.tier) ? p.tier : [];
+      const tiers = Math.max(2, Math.round(num(p.tiers, spin.length || 3)));
+      const name = str(p.leaf, 'pine');
+      const leaf = mats[name] || K.M[name as 'pine'] || mats.pine;
       const g = new THREE.Group();
-      const trunk = K.mesh(new THREE.CylinderGeometry(.08, .13, h * .3, 8), K.M.bark);
-      trunk.position.y = h * .15; g.add(trunk);
+      const trunk = K.mesh(new THREE.CylinderGeometry(.08, .13, h * .34, 8), K.M.bark);
+      trunk.position.y = h * .17; g.add(trunk);
       for (let i = 0; i < tiers; i++) {
-        const t = i / tiers, r = h * (.34 - t * .09), th = h * (.42 - t * .06), y = h * (.22 + t * .24);
+        const t = i / tiers, r = h * (.3 - t * .075) * spread, th = h * (.34 - t * .04), y = h * (.22 + t * .48);
         const cone = K.mesh(new THREE.ConeGeometry(r, th, 7), leaf);
         cone.position.y = y + th / 2; cone.rotation.y = num(spin[i]); g.add(cone);
         if (p.snow === true) {
@@ -144,13 +305,22 @@ const KINDS: PropKind[] = [
   },
   {
     kind: 'shrub', name: '灌木', category: '植物',
-    params: [pnum('s', '大小', .2, .9, .05, .4), psel('leafA', '颜色', LEAF_TONES, LEAF.leaf), psel('leafB', '颜色', LEAF_TONES, LEAF.leafLight)],
+    params: [pnum('s', '大小', .2, .9, .05, .4), psel('leafA', '颜色', LEAF_TONES, LEAF.leaf), psel('leafB', '颜色', LEAF_TONES, LEAF.leafLight), pnum('blobs', '团数', 1, 5, 1, 2), pnum('spread', '展开', .6, 1.6, .05, 1)],
     build(ctx, p) {
+      seed(num(p.seed, 1));
       const { K } = ctx;
       const s = num(p.s, .4);
       const g = new THREE.Group();
       K.ico(g, s, leafMat(ctx, num(p.leafA)), 0, s * .55, 0, 1);
-      if (p.second === true) K.ico(g, s * .7, leafMat(ctx, num(p.leafB, 1)), num(p.dx), s * .4, num(p.dz), 1);
+      // 老存档记的是 second + dx/dz（再来一团），新的是 blobs + spread（几团、铺多开）
+      const extra = p.blobs !== undefined ? Math.round(num(p.blobs, 2)) - 1 : (p.second === true ? 1 : 0);
+      const spread = num(p.spread, 1);
+      for (let i = 0; i < extra; i++) {
+        const a = i * 2.39996 + rr(0, 1);
+        const d = s * rr(.55, 1.15) * spread, r = s * rr(.5, .78);
+        const m = K.ico(g, r, leafMat(ctx, i % 2 ? num(p.leafB, 1) : num(p.leafA)), Math.cos(a) * d, s * rr(.35, .7), Math.sin(a) * d, 1);
+        m.scale.y = rr(.75, 1);
+      }
       return g;
     },
   },
