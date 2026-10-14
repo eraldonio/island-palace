@@ -1,0 +1,649 @@
+import { cleanLook, type Look } from './look';
+import { gid, type PalaceDoc, type Rect, type Vec2 } from './schema';
+import { t } from './i18n';
+import { NOTE_COLORS, sanitizeNoteHtml } from './notes';
+
+export { NOTE_COLORS, NOTE_INK, NOTE_LIFT, NOTE_PPM, drawNote, noteCorners, noteLocal, notePaper, noteToWorld, parseNote, sanitizeNoteHtml } from './notes';
+
+/* =====================================================================
+ * 世界数据：宫殿摆在哪里。
+ *   PalaceWorld  一个人的整个记忆世界（将来：群岛 / 小星球）
+ *   WorldRegion  一块区域（一期只有一座岛）；theme 决定地形与装饰风格
+ *   PlacedPalace 一座宫殿在区域里的位置与朝向
+ * 宫殿自身的数据仍然在各自的 PalaceDoc 里，世界只记录摆放关系，
+ * 所以删除 / 同步世界文件不会影响宫殿内容。
+ * 坐标：区域平面坐标（米），x 向东、z 向南；rot 为绕 y 轴的角度（0 / 90 / 180 / 270）。
+ *
+ * 版本：
+ *   1  区域 + 宫殿摆放
+ *   2  小管家 pet；只是新增可选字段，compat 仍为 1
+ *   3  删除旅程 journeys 与数字编码表 pao（随记笔记功能一起去掉）；只是去掉可选字段，compat 仍为 1
+ *   4  岛上的摆设 props（可以单独移动的树 / 石头 / 长椅……）；只是新增可选字段，compat 仍为 1。
+ *      字段不存在 = 这座岛还没烘焙过（见 props.ts 的 bakeRegionProps），烘焙过才能单个移动。
+ *   5  岛上的便签 notes（平铺在地面上的 w×h 卡片，内容是一小段清洗过的富文本）；新增可选字段，compat 仍为 1。
+ * ===================================================================== */
+
+/** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的世界文件仍然认得出来（同 PALACE_FORMAT） */
+export const WORLD_FORMAT = 'kmind-palace-world';
+export const WORLD_VERSION = 6;
+/** 读取本版本写出的世界数据至少需要的版本（规则同 PALACE_COMPAT） */
+export const WORLD_COMPAT = 1;
+
+/** 小管家的默认名字 */
+export const PET_NAME = '豆豆';
+
+export type RoofKind = 'auto' | 'flat' | 'gable' | 'none';
+
+export interface PlacedPalace {
+  palaceId: string;
+  /** 宫殿局部坐标原点在区域中的位置 */
+  pos: Vec2;
+  rot: number;
+  roof?: RoofKind;
+  /** 屋顶颜色；不填则用宫殿主题色 */
+  roofColor?: string;
+}
+
+/**
+ * 岛上的一个摆设（树、石头、长椅……）。kind 是 props.ts 里注册的稳定 id，
+ * params 是那种 kind 自己的参数（尺寸、颜色、随机细节的种子……）。
+ */
+export interface PlacedProp {
+  id: string;
+  kind: string;
+  pos: Vec2;
+  rot?: number;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * 岛上的一张便签：平铺在地面上的 w×h 米卡片。
+ * 内容是清洗过的富文本（见 notes.ts 的 sanitizeNoteHtml），颜色是 NOTE_COLORS 的序号。
+ */
+export interface PlacedNote {
+  id: string;
+  /** 便签**中心**在区域平面上的位置（米）：贴地平面的中心，四角 = pos ± (w/2, h/2) 绕 rot 旋转 */
+  pos: Vec2;
+  rot?: number;
+  /** 基础尺寸（米），可调 */
+  w: number;
+  h: number;
+  /** NOTE_COLORS 的序号 */
+  color: number;
+  /** 地面预览的字号（米） */
+  fs: number;
+  html: string;
+}
+
+export interface WorldRegion {
+  id: string;
+  name: string;
+  /** 场景主题：island 海岛 / forest 森林 / snow 雪山 / sky 浮空岛 */
+  theme: string;
+  /** 地形、树木等随机装饰的种子：同一个种子每次生成的样子都一样 */
+  seed: number;
+  /** 区域原点（广场中心）在世界中的位置 */
+  origin?: Vec2;
+  createdAt?: number;
+  palaces: PlacedPalace[];
+  /** 岛上的摆设：烘焙过才有（没有 = 还没烘焙，装饰仍由主题程序化生成） */
+  props?: PlacedProp[];
+  /** 岛上的便签（见 notes.ts）：平铺在地面上，和摆设一样是可单独拾取 / 移动的元素 */
+  notes?: PlacedNote[];
+  /** 地形捏形 / 自定义轮廓偏移（16个径向角度的半径偏移，米） */
+  shapeOffsets?: number[];
+}
+
+export interface PalaceWorld {
+  format: typeof WORLD_FORMAT;
+  version: number;
+  compat?: number;
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  regions: WorldRegion[];
+  /** 小管家（宠物）：名字、外观；hidden 时不在宫殿里出现 */
+  pet?: { name: string; look: Look; hidden?: boolean };
+}
+
+/** 宫殿主题色（名牌圆点、屋顶） */
+export const PALACE_COLORS = ['#c46d4d', '#3e4d66', '#5f7a6c', '#b8563c', '#6d4a3a', '#8a6aa0', '#c9973f', '#4f7f8a', '#9a5b6e', '#6b7a3e'];
+
+/** 便签：新便签的默认尺寸（米）、尺寸可调范围、地面预览的字号范围（米）；纸色见 notes.ts */
+export const NOTE_NEW = { w: 2, h: 1.5 };
+export const NOTE_SIZE = { min: 1, max: 6, step: .5 };
+export const NOTE_FS = { min: .1, max: .5, step: .05, def: .2 };
+
+/** 小镇中心广场的半径（宫殿不能压到广场） */
+export const PLAZA_R = 6;
+/** 两座宫殿地块之间至少留出的路宽 */
+export const LOT_GAP = 3;
+
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+function hash(s: string) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+export function palaceColor(doc: Pick<PalaceDoc, 'id' | 'color'>) {
+  return doc.color || PALACE_COLORS[hash(doc.id) % PALACE_COLORS.length];
+}
+
+export function createWorld(): PalaceWorld {
+  const now = Date.now();
+  return {
+    format: WORLD_FORMAT, version: WORLD_VERSION, compat: WORLD_COMPAT, id: gid('world-'), name: t('记忆世界'), createdAt: now, updatedAt: now,
+    regions: [createRegion()],
+  };
+}
+
+export function createRegion(name = t('岛上小镇'), theme = 'island', origin: Vec2 = [0, 0]): WorldRegion {
+  return { id: gid('region-'), name, theme, seed: Math.floor(Math.random() * 1e6), origin, createdAt: Date.now(), palaces: [], notes: [] };
+}
+
+/** 各主题的默认岛名（模块常量，显示 / 使用时再 t()） */
+export const THEME_NAMES: Record<string, string> = { island: '岛上小镇', forest: '林间小岛', snow: '雪山小岛', sky: '浮空小岛' };
+
+/** 浮空岛整体悬在海面上方 */
+const THEME_LIFT: Record<string, number> = { sky: 14 };
+export function regionLift(r: Pick<WorldRegion, 'theme'>) {
+  return THEME_LIFT[r.theme] || 0;
+}
+
+export function regionOrigin(r: WorldRegion): Vec2 {
+  return r.origin || [0, 0];
+}
+
+/** 早期版本写在世界文件上的旅程 / 数字编码表：读入时删掉 */
+interface LegacyWorldFields {
+  journeys?: unknown;
+  pao?: unknown;
+}
+
+/** 从版本 n 升到 n + 1 */
+const MIGRATIONS: Record<number, (w: PalaceWorld) => void> = {
+  2(w) {
+    // 旅程、数字编码表随记笔记功能一起删除；这些字段不在 PalaceWorld 里，按可选字段临时看一眼
+    const old = w as PalaceWorld & LegacyWorldFields;
+    delete old.journeys;
+    delete old.pao;
+  },
+  5(w) {
+    // 彻底移除房屋与宫殿：清空所有岛上的旧宫殿摆放
+    for (const r of w.regions) {
+      r.palaces = [];
+    }
+  },
+};
+
+/**
+ * 读取摆设：字段不存在（老世界文件 / 还没烘焙）时返回 undefined，保持「没烘焙」这个状态；
+ * 空数组是烘焙过但岛上没有摆设，是另一回事。
+ */
+function normProps(raw: unknown): PlacedProp[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: PlacedProp[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const kind = 'kind' in item ? item.kind : undefined;
+    const pos = 'pos' in item ? item.pos : undefined;
+    if (typeof kind !== 'string' || !kind || !Array.isArray(pos)) continue;
+    const x = Number(pos[0]), z = Number(pos[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    const id = 'id' in item ? item.id : undefined;
+    const rot = 'rot' in item ? item.rot : undefined;
+    const params = 'params' in item ? item.params : undefined;
+    const prop: PlacedProp = { id: typeof id === 'string' && id ? id : gid('prop-'), kind, pos: [x, z] };
+    if (typeof rot === 'number' && Number.isFinite(rot)) prop.rot = rot;
+    // 上面已经确认是普通对象（不是数组 / null），TS 看不出来，这里显式收窄
+    if (typeof params === 'object' && params !== null && !Array.isArray(params)) prop.params = params as Record<string, unknown>;
+    out.push(prop);
+  }
+  return out;
+}
+
+/**
+ * 读取便签：逐条规范化（位置 / 尺寸 / 颜色 / 字号都夹到合法范围），坏掉的条目丢掉。
+ * 字段不存在（旧世界文件）时是空数组——便签和 props 不一样，没有「没烘焙」这个状态。
+ */
+function normNotes(raw: unknown): PlacedNote[] {
+  if (!Array.isArray(raw)) return [];
+  const clamp = (v: unknown, lo: number, hi: number, def: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const out: PlacedNote[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const it = item as Record<string, unknown>;
+    const pos = it.pos;
+    const x = Array.isArray(pos) ? Number(pos[0]) : NaN, z = Array.isArray(pos) ? Number(pos[1]) : NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    const note: PlacedNote = {
+      id: typeof it.id === 'string' && it.id ? it.id : gid('note-'),
+      pos: [r3(x), r3(z)],
+      w: clamp(it.w, NOTE_SIZE.min, NOTE_SIZE.max, NOTE_NEW.w),
+      h: clamp(it.h, NOTE_SIZE.min, NOTE_SIZE.max, NOTE_NEW.h),
+      color: Math.abs(Math.trunc(clamp(it.color, 0, NOTE_COLORS.length - 1, 0))) % NOTE_COLORS.length,
+      fs: clamp(it.fs, NOTE_FS.min, NOTE_FS.max, NOTE_FS.def),
+      html: sanitizeNoteHtml(typeof it.html === 'string' ? it.html : ''),
+    };
+    const rot = Number(it.rot);
+    if (Number.isFinite(rot)) note.rot = r3(rot);
+    out.push(note);
+  }
+  return out;
+}
+
+/** 校验并规范化外部数据；无法识别时抛出错误 */
+export function normalizeWorld(raw: unknown): PalaceWorld {
+  const w = raw as PalaceWorld;
+  if (!w || typeof w !== 'object' || w.format !== WORLD_FORMAT) throw new Error(t('不是有效的世界数据'));
+  const version = Number(w.version) || 1, compat = Number(w.compat) || version;
+  if (compat > WORLD_VERSION) throw new Error(t('世界数据需要更新版本的插件才能打开（数据要求 {need}，当前支持 {have}），请升级插件', { need: compat, have: WORLD_VERSION }));
+  const regions: WorldRegion[] = (Array.isArray(w.regions) ? w.regions : []).map(r => {
+    const region: WorldRegion = {
+      ...r,
+      theme: r.theme || 'island',
+      seed: Number.isFinite(r.seed) ? r.seed : 1,
+      origin: (Array.isArray(r.origin) ? r.origin : [0, 0]),
+      palaces: (Array.isArray(r.palaces) ? r.palaces : []).filter(p => p && p.palaceId && Array.isArray(p.pos)).map(p => ({ ...p, rot: normRot(p.rot) })),
+    };
+    // props 不存在就整条字段都没有（= 没烘焙），不要留一个 undefined 占位
+    const props = normProps(r.props);
+    if (props) region.props = props;
+    else delete region.props;
+    region.notes = normNotes(r.notes);
+    if (Array.isArray(r.shapeOffsets)) {
+      region.shapeOffsets = r.shapeOffsets.map(n => Math.round(Math.max(-30, Math.min(60, Number(n) || 0)) * 10) / 10);
+    } else delete region.shapeOffsets;
+    return region;
+  });
+  if (!regions.length) regions.push(createRegion());
+  const out: PalaceWorld = { ...w, version: Math.max(version, WORLD_VERSION), compat: Math.max(Number(w.compat) || 0, WORLD_COMPAT), regions };
+  for (let v = version; v < WORLD_VERSION; v++) MIGRATIONS[v]?.(out);
+  if (w.pet && typeof w.pet === 'object') {
+    out.pet = { name: typeof w.pet.name === 'string' && w.pet.name.trim() ? w.pet.name.trim().slice(0, 20) : t(PET_NAME), look: cleanLook(w.pet.look) };
+    if (w.pet.hidden) out.pet.hidden = true;
+  } else delete out.pet;
+  return out;
+}
+
+export function cloneWorld(w: PalaceWorld): PalaceWorld {
+  return JSON.parse(JSON.stringify(w));
+}
+
+export function normRot(r: number) {
+  return ((Math.round((r || 0) / 90) * 90) % 360 + 360) % 360;
+}
+
+// =====================================================================
+// 坐标变换：宫殿局部 ↔ 区域
+// =====================================================================
+
+/** 与 three.js 的 rotation.y 一致：x' = x·cos + z·sin，z' = −x·sin + z·cos */
+function cs(rot: number): [number, number] {
+  switch (normRot(rot)) {
+    case 90: return [0, 1];
+    case 180: return [-1, 0];
+    case 270: return [0, -1];
+    default: return [1, 0];
+  }
+}
+
+export function rotateVec(rot: number, x: number, z: number): Vec2 {
+  const [c, s] = cs(rot);
+  return [x * c + z * s, -x * s + z * c];
+}
+
+export function toRegion(p: Pick<PlacedPalace, 'pos' | 'rot'>, x: number, z: number): Vec2 {
+  const [rx, rz] = rotateVec(p.rot, x, z);
+  return [p.pos[0] + rx, p.pos[1] + rz];
+}
+
+export function toLocal(p: Pick<PlacedPalace, 'pos' | 'rot'>, x: number, z: number): Vec2 {
+  return rotateVec(-p.rot, x - p.pos[0], z - p.pos[1]);
+}
+
+export function rectToRegion(p: Pick<PlacedPalace, 'pos' | 'rot'>, r: Rect): Rect {
+  const [ax, az] = toRegion(p, r[0], r[1]), [bx, bz] = toRegion(p, r[2], r[3]);
+  return [Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz)];
+}
+
+// =====================================================================
+// 宫殿的占地
+// =====================================================================
+
+/** 室内房间（有地面、非室外） */
+export function indoorRects(doc: PalaceDoc): Rect[] {
+  return doc.rooms.filter(r => r.floor && !r.outdoor).map(r => r.rect);
+}
+
+export function bboxOf(rects: Rect[]): Rect | null {
+  if (!rects.length) return null;
+  return [
+    Math.min(...rects.map(r => r[0])), Math.min(...rects.map(r => r[1])),
+    Math.max(...rects.map(r => r[2])), Math.max(...rects.map(r => r[3])),
+  ];
+}
+
+/** 宫殿的地块（局部坐标）：有地基就用地基，否则房间外扩 1.2 m */
+export function palaceLot(doc: PalaceDoc): Rect {
+  if (doc.ground?.plinth) return [...doc.ground.plinth] as Rect;
+  const b = bboxOf(doc.rooms.filter(r => r.floor).map(r => r.rect));
+  if (!b) return [-3, -3, 3, 3];
+  return [b[0] - 1.2, b[1] - 1.2, b[2] + 1.2, b[3] + 1.2];
+}
+
+export function rectCenter(r: Rect): Vec2 {
+  return [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2];
+}
+
+export function rectsOverlap(a: Rect, b: Rect, gap = 0) {
+  return a[0] < b[2] + gap && a[2] + gap > b[0] && a[1] < b[3] + gap && a[3] + gap > b[1];
+}
+
+function rectCircleDist(r: Rect, cx: number, cz: number) {
+  const dx = Math.max(r[0] - cx, 0, cx - r[2]), dz = Math.max(r[1] - cz, 0, cz - r[3]);
+  return Math.hypot(dx, dz);
+}
+
+/**
+ * 入户门：优先 front，其次外墙上的普通门 / 推拉门。
+ * 返回门洞中心（墙外表面上）与朝外的法线（局部坐标）。
+ */
+export function frontDoor(doc: PalaceDoc): { x: number; z: number; nx: number; nz: number; w: number } | null {
+  for (const kinds of [['front'], ['door', 'slide']]) {
+    for (const w of doc.walls) {
+      if (!w.normal) continue;
+      const o = w.openings?.find(o => kinds.includes(o.kind));
+      if (!o) continue;
+      const axisX = Math.abs(w.a[1] - w.b[1]) < 1e-6;
+      const c = axisX ? w.a[1] : w.a[0], s = (o.s0 + o.s1) / 2, t = (w.thickness ?? .2) / 2;
+      const [nx, nz] = w.normal;
+      return axisX
+        ? { x: s, z: c + nz * t, nx, nz, w: o.s1 - o.s0 }
+        : { x: c + nx * t, z: s, nx, nz, w: o.s1 - o.s0 };
+    }
+  }
+  return null;
+}
+
+export interface PalaceStats { rooms: number; items: number }
+
+export function palaceStats(doc: PalaceDoc): PalaceStats {
+  return {
+    rooms: doc.rooms.filter(r => r.floor).length,
+    items: doc.items.length,
+  };
+}
+
+// =====================================================================
+// 摆放：碰撞检查、自动找空地、与宫殿列表同步
+// =====================================================================
+
+export function placedLot(p: PlacedPalace, doc: PalaceDoc): Rect {
+  return rectToRegion(p, palaceLot(doc));
+}
+
+/** 这个摆放位置是否可用：不压广场、不和其他宫殿的地块（留出路宽）重叠 */
+export function canPlace(region: WorldRegion, docs: Map<string, PalaceDoc>, p: PlacedPalace, doc: PalaceDoc, ignoreId = p.palaceId) {
+  const lot = placedLot(p, doc);
+  if (rectCircleDist(lot, 0, 0) < PLAZA_R + 2) return false;
+  for (const q of region.palaces) {
+    if (q.palaceId === ignoreId) continue;
+    const d = docs.get(q.palaceId);
+    if (d && rectsOverlap(lot, placedLot(q, d), LOT_GAP)) return false;
+  }
+  return true;
+}
+
+/** 让宫殿地块中心落在 (cx, cz) 附近时的 pos（取整到 1 m 网格） */
+export function posForLotCenter(doc: PalaceDoc, rot: number, cx: number, cz: number): Vec2 {
+  const [lx, lz] = rectCenter(palaceLot(doc));
+  const [rx, rz] = rotateVec(rot, lx, lz);
+  return [Math.round(cx - rx), Math.round(cz - rz)];
+}
+
+/** 以 near 为中心向外螺旋搜索第一个可用位置（1 m 网格） */
+export function findFreeSpot(region: WorldRegion, docs: Map<string, PalaceDoc>, doc: PalaceDoc, rot = 0, near: Vec2 = [0, 0]): Vec2 {
+  const test = (cx: number, cz: number) => {
+    const pos = posForLotCenter(doc, rot, cx, cz);
+    return canPlace(region, docs, { palaceId: doc.id, pos, rot }, doc) ? pos : null;
+  };
+  const hit = test(near[0], near[1]);
+  if (hit) return hit;
+  for (let r = 1; r < 400; r++) {
+    // 同一圈里按角度从正北开始顺时针，结果稳定可预期
+    const cands: [number, number, number][] = [];
+    for (let i = -r; i <= r; i++) {
+      for (const [dx, dz] of [[i, -r], [i, r], [-r, i], [r, i]] as [number, number][]) {
+        if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+        cands.push([dx, dz, Math.atan2(dx, -dz)]);
+      }
+    }
+    const ang = (a: number) => (a + Math.PI * 2) % (Math.PI * 2);
+    cands.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]) || ang(a[2]) - ang(b[2]));
+    for (const [dx, dz] of cands) {
+      const pos = test(near[0] + dx, near[1] + dz);
+      if (pos) return pos;
+    }
+  }
+  return [near[0], near[1]];
+}
+
+/** 主区域（第一座岛；新同步来的宫殿默认放这里） */
+export function mainRegion(world: PalaceWorld): WorldRegion {
+  if (!world.regions.length) world.regions.push(createRegion());
+  return world.regions[0];
+}
+
+export function findPlacement(world: PalaceWorld, palaceId: string) {
+  for (const region of world.regions) {
+    const p = region.palaces.find(p => p.palaceId === palaceId);
+    if (p) return { region, placed: p };
+  }
+  return null;
+}
+
+/**
+ * 让世界和宫殿列表保持一致：
+ * - 新出现的宫殿（例如老版本升级、其他端新建后同步过来）→ 自动找空地放下
+ * - 重复的摆放记录 → 去重
+ * - 世界里记着、但宫殿文件暂时读不到的 → 保留位置（可能正在同步），渲染时跳过
+ *   （用户在界面里删除宫殿时会显式移除它的摆放）
+ * 返回是否有改动。
+ */
+export function syncWorld(world: PalaceWorld, docs: Map<string, PalaceDoc>): boolean {
+  let changed = false;
+  // 彻底移除房屋：世界不再自动添加宫殿外壳
+  for (const region of world.regions) {
+    if (region.palaces.length) {
+      region.palaces = [];
+      changed = true;
+    }
+  }
+  if (changed) world.updatedAt = Date.now();
+  return changed;
+}
+
+/** 区域里所有宫殿地块的外包矩形（含广场） */
+export function regionExtent(region: WorldRegion, docs: Map<string, PalaceDoc>): Rect {
+  const rects: Rect[] = [[-PLAZA_R, -PLAZA_R, PLAZA_R, PLAZA_R]];
+  for (const p of region.palaces) {
+    const d = docs.get(p.palaceId);
+    if (d) rects.push(placedLot(p, d));
+  }
+  return bboxOf(rects).map(r3) as Rect;
+}
+
+// =====================================================================
+// 群岛：多座岛在世界里的摆放
+// =====================================================================
+
+/** 岛之间至少留出的海面宽度 */
+export const SEA_GAP = 16;
+
+export function regionOfPalace(world: PalaceWorld, palaceId: string) {
+  return world.regions.find(r => r.palaces.some(p => p.palaceId === palaceId)) || null;
+}
+
+/**
+ * 岛的外接圆（世界坐标）。实际半径由地形生成后给出（radii），
+ * 没有时按宫殿占地估算（与地形生成的外扩规则一致）。
+ */
+export function regionCircle(region: WorldRegion, docs: Map<string, PalaceDoc>, radii?: Map<string, number>) {
+  const ext = regionExtent(region, docs);
+  const [cx, cz] = rectCenter(ext);
+  const [ox, oz] = regionOrigin(region);
+  const est = Math.max(Math.hypot(ext[2] - ext[0], ext[3] - ext[1]) / 2 + 10, 24) + 9;
+  return { x: ox + cx, z: oz + cz, r: radii?.get(region.id) ?? est };
+}
+
+/** 给一座新岛找位置：从已有岛群的中心向外螺旋搜索，不与其他岛重叠 */
+export function findRegionSpot(world: PalaceWorld, docs: Map<string, PalaceDoc>, region: WorldRegion, radii?: Map<string, number>): Vec2 {
+  const others = world.regions.filter(r => r !== region).map(r => regionCircle(r, docs, radii));
+  if (!others.length) return [0, 0];
+  const me = regionCircle({ ...region, origin: [0, 0] }, docs, radii);
+  const cx = others.reduce((s, c) => s + c.x, 0) / others.length, cz = others.reduce((s, c) => s + c.z, 0) / others.length;
+  for (let r = 0; r < 2000; r += 6) {
+    const steps = Math.max(1, Math.round(r / 6));
+    for (let i = 0; i < steps * 4; i++) {
+      // 从东南方向（镜头朝向）开始，新岛更容易出现在视野里
+      const a = Math.PI / 4 + i / (steps * 4) * Math.PI * 2;
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      if (others.every(o => Math.hypot(o.x - x, o.z - z) >= o.r + me.r + SEA_GAP)) {
+        return [Math.round(x - me.x), Math.round(z - me.z)];
+      }
+    }
+  }
+  return [0, 0];
+}
+
+/**
+ * 岛长大后可能和邻岛挤在一起：把后建的岛沿连线方向推开。
+ * 返回是否移动过（需要保存世界）。
+ */
+export function settleRegions(world: PalaceWorld, docs: Map<string, PalaceDoc>, radii?: Map<string, number>): boolean {
+  let moved = false;
+  for (let pass = 0; pass < 24; pass++) {
+    let any = false;
+    const cs = world.regions.map(r => regionCircle(r, docs, radii));
+    for (let i = 0; i < world.regions.length; i++) {
+      for (let j = i + 1; j < world.regions.length; j++) {
+        const a = cs[i], b = cs[j];
+        const need = a.r + b.r + SEA_GAP, d = Math.hypot(b.x - a.x, b.z - a.z);
+        if (d >= need - .5) continue;
+        const ux = d > .01 ? (b.x - a.x) / d : 1, uz = d > .01 ? (b.z - a.z) / d : 0;
+        const push = need - d + 1;
+        const o = regionOrigin(world.regions[j]);
+        world.regions[j].origin = [Math.round(o[0] + ux * push), Math.round(o[1] + uz * push)];
+        cs[j] = regionCircle(world.regions[j], docs, radii);
+        any = moved = true;
+      }
+    }
+    if (!any) break;
+  }
+  if (moved) world.updatedAt = Date.now();
+  return moved;
+}
+
+/** 把一座宫殿搬到另一座岛上（自动找空地）；返回新的摆放 */
+export function movePalaceToRegion(world: PalaceWorld, docs: Map<string, PalaceDoc>, palaceId: string, targetId: string): PlacedPalace | null {
+  const from = regionOfPalace(world, palaceId), to = world.regions.find(r => r.id === targetId), doc = docs.get(palaceId);
+  if (!from || !to || !doc || from === to) return null;
+  const old = from.palaces.find(p => p.palaceId === palaceId);
+  from.palaces = from.palaces.filter(p => p.palaceId !== palaceId);
+  const placed: PlacedPalace = { ...old, palaceId, pos: findFreeSpot(to, docs, doc, 0), rot: 0 };
+  to.palaces.push(placed);
+  world.updatedAt = Date.now();
+  return placed;
+}
+
+// =====================================================================
+// 岛上的摆设：树、石头、长椅……（数据见 props.ts）
+// =====================================================================
+
+/** 宫殿压到摆设上时，把摆设让开后的最小间距 */
+const PROP_PAD = .6;
+
+/** 岛上的摆设；没烘焙过（字段不存在）时是空数组 */
+export function propsOf(r: WorldRegion): PlacedProp[] {
+  return r.props || [];
+}
+
+export function findProp(r: WorldRegion, id: string): PlacedProp | null {
+  return propsOf(r).find(p => p.id === id) || null;
+}
+
+/** 加一个摆设（kind 见 props.ts）；params 里会带上一个由 id 推出的随机种子，让几何细节可复现 */
+export function addProp(r: WorldRegion, kind: string, pos: Vec2, rot?: number, params?: Record<string, unknown>): PlacedProp {
+  const id = gid('prop-');
+  const prop: PlacedProp = { id, kind, pos: [r3(pos[0]), r3(pos[1])], params: { ...(params || {}), seed: hash(id + kind) || 1 } };
+  if (rot !== undefined) prop.rot = r3(rot);
+  (r.props || (r.props = [])).push(prop);
+  return prop;
+}
+
+export function removeProp(r: WorldRegion, id: string): boolean {
+  const list = r.props;
+  if (!list) return false;
+  const i = list.findIndex(p => p.id === id);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  return true;
+}
+
+/** 摆设中心是否落在地块里 */
+export function propInLot(p: PlacedProp, lot: Rect): boolean {
+  return p.pos[0] >= lot[0] && p.pos[0] <= lot[2] && p.pos[1] >= lot[1] && p.pos[1] <= lot[3];
+}
+
+/** 把摆设挪到地块外：朝最近的一条边让开（留 PROP_PAD 米） */
+export function nudgePropOutOfLot(p: PlacedProp, lot: Rect): void {
+  const [x, z] = p.pos;
+  const left = x - lot[0], right = lot[2] - x, top = z - lot[1], bottom = lot[3] - z;
+  const near = Math.min(left, right, top, bottom);
+  if (near === left) p.pos[0] = lot[0] - PROP_PAD;
+  else if (near === right) p.pos[0] = lot[2] + PROP_PAD;
+  else if (near === top) p.pos[1] = lot[1] - PROP_PAD;
+  else p.pos[1] = lot[3] + PROP_PAD;
+}
+
+// =====================================================================
+// 岛上的便签：平铺在地面上的卡片（形状见 notes.ts）
+// =====================================================================
+
+/** 岛上的便签；字段不存在（旧世界文件）时是空数组 */
+export function notesOf(r: WorldRegion): PlacedNote[] {
+  return r.notes || [];
+}
+
+export function findNote(r: WorldRegion, id: string): PlacedNote | null {
+  return notesOf(r).find(n => n.id === id) || null;
+}
+
+/** 加一张便签；init 里可以带 w / h / color / fs / html，缺省就是默认值 */
+export function addNote(r: WorldRegion, pos: Vec2, init: Partial<PlacedNote> = {}): PlacedNote {
+  const note: PlacedNote = {
+    id: gid('note-'),
+    pos: [r3(pos[0]), r3(pos[1])],
+    w: NOTE_NEW.w, h: NOTE_NEW.h, color: 0, fs: NOTE_FS.def, html: '',
+    ...init,
+  };
+  note.html = sanitizeNoteHtml(note.html);
+  (r.notes || (r.notes = [])).push(note);
+  return note;
+}
+
+export function removeNote(r: WorldRegion, id: string): boolean {
+  const list = r.notes;
+  if (!list) return false;
+  const i = list.findIndex(n => n.id === id);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  return true;
+}

@@ -1,0 +1,5 @@
+packages:
+  - packages/*
+# esbuild 的可执行文件由 @esbuild/<平台> 可选依赖提供，安装脚本不跑也能用（vite / vitest 会用到它）
+allowBuilds:
+  esbuild: false

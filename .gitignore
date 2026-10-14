@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.snapshots/
+.DS_Store
+*.log
+.claude/
+.env
+.vitest/

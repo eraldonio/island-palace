@@ -1,0 +1,22 @@
+{
+  "name": "island-palace",
+  "private": true,
+  "packageManager": "pnpm@11.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @island-palace/core dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "eslint packages"
+  },
+  "devDependencies": {
+    "@eslint/json": "0.14.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
+    "typescript-eslint": "^8.71.0"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eraldonio/island-palace.git"
+  }
+}

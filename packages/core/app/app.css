@@ -1,0 +1,2 @@
+/* 独立网页版：便签用的 Quill 样式（其余界面样式都由 core 的 styles.ts 提供） */
+@import 'quill/dist/quill.snow.css';
