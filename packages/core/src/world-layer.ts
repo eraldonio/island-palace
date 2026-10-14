@@ -13,7 +13,7 @@ import { html } from './dom';
 import { buildRoof } from './roof';
 import { THEMES, getTheme, type ThemePack } from './themes';
 import { commonMats, GRASS_Y, WATER_Y, type Landmark, type Mats, type ThemeCtx } from './themes/common';
-import { bakeRegionProps, buildProp, registerProp } from './props';
+import { bakeRegionProps, buildProp, propBaseY, registerProp } from './props';
 import {
   PLAZA_R, bboxOf, frontDoor, indoorRects, notesOf, palaceColor, palaceLot, palaceStats, placedLot, rectCenter, regionExtent, regionOrigin, rotateVec, toRegion,
   type PalaceWorld, type PlacedPalace, type PlacedProp, type WorldRegion,
@@ -73,8 +73,10 @@ interface PropEntry {
   local: THREE.Box3;
   /** 区域局部坐标的包围盒（拾取用，和画面上看到的一致） */
   box: THREE.Box3;
-  /** 根节点自带的抬高（长椅坐在铺装上 6cm、热气球在天上 4m）：落位时 y = GRASS_Y + lift */
+  /** 根节点自带的抬高（长椅坐在铺装上 6cm、热气球在天上 4m）：落位时 y = baseY + lift */
   lift: number;
+  /** 落位基准（草地 / 水面 / 空中，见 props.ts 的 propBaseY）：拖动时沿用 */
+  baseY: number;
   /** 脱离批次的个体（选中时才有）；并进合批结果的是 null */
   obj: THREE.Object3D | null;
 }
@@ -273,13 +275,14 @@ export class RegionLayer {
       if (!obj) continue;
       obj.updateMatrixWorld(true); // 还没进场景树：world 矩阵就是它自己的局部矩阵
       const local = new THREE.Box3().setFromObject(obj);
-      const lift = obj.position.y; // build() 的根节点抬高（相对草地），落位时不能丢
+      const lift = obj.position.y; // build() 的根节点抬高（相对落位基准），落位时不能丢
+      const baseY = propBaseY(ctx.seaY, p.params); // 草地 / 水面 / 空中
       // 位置 / 朝向必须和 props.ts 里 placer 那条路一模一样（烘焙前后才看不出差别）
-      obj.position.set(p.pos[0], GRASS_Y + lift, p.pos[1]);
+      obj.position.set(p.pos[0], baseY + lift, p.pos[1]);
       if (p.rot) obj.rotation.y = p.rot;
-      const box = local.clone().applyMatrix4(propMatrix(p.pos, p.rot ?? 0));
+      const box = local.clone().applyMatrix4(propMatrix(p.pos, p.rot ?? 0, baseY));
       const detached = p.id === this.selected;
-      this.propBoxes.set(p.id, { local, box, lift, obj: detached ? obj : null });
+      this.propBoxes.set(p.id, { local, box, lift, baseY, obj: detached ? obj : null });
       (detached && this.selRoot ? this.selRoot : ctx.raw).add(obj);
     }
   }
@@ -435,17 +438,21 @@ export class RegionLayer {
     if (this.terrain) this.rebuildDecor();
   }
 
-  /** 拖动中的每帧变换：只动脱离批次的个体（不重建批次），拾取盒跟着走 */
-  moveProp(propId: string, pos: Vec2, rot: number) {
+  /**
+   * 拖动中的每帧变换：只动脱离批次的个体（不重建批次），拾取盒跟着走。
+   * 给了 params 就按新参数重算落位基准（拖过海岸线时「落在水面」会跟着切换，高度实时变）。
+   */
+  moveProp(propId: string, pos: Vec2, rot: number, params?: Record<string, unknown>) {
     if (this.selected !== propId) {
       if (!this.propBoxes.has(propId)) return; // 不是这座岛的 / 还没烘焙
       this.selectProp(propId); // 调用方没先选中：这一帧把它脱离出来（只重建这一次）
     }
     const e = this.propBoxes.get(propId);
     if (!e?.obj) return;
-    e.obj.position.set(pos[0], GRASS_Y + e.lift, pos[1]);
+    if (params) e.baseY = propBaseY(this.terrain?.seaY ?? WATER_Y - this.lift, params);
+    e.obj.position.set(pos[0], e.baseY + e.lift, pos[1]);
     e.obj.rotation.y = rot;
-    e.box.copy(e.local).applyMatrix4(propMatrix(pos, rot));
+    e.box.copy(e.local).applyMatrix4(propMatrix(pos, rot, e.baseY));
   }
 
   /** 摆设的世界包围盒（挂标记 / 命中反馈用）；没有这个摆设就返回 null */
@@ -884,8 +891,8 @@ export class WorldLayer {
   }
 
   /** 拖动中的每帧变换（只动脱离批次的个体，不重建批次） */
-  movePropPreview(regionId: string, propId: string, pos: Vec2, rot: number) {
-    this.regions.get(regionId)?.moveProp(propId, pos, rot);
+  movePropPreview(regionId: string, propId: string, pos: Vec2, rot: number, params?: Record<string, unknown>) {
+    this.regions.get(regionId)?.moveProp(propId, pos, rot, params);
   }
 
   /** 摆设的数据变了（加 / 删 / 改参数）：重建那一批 */
@@ -1063,12 +1070,12 @@ function sailboat(K: Kit, m: Mats, x: number, z: number, rot: number) {
 // =====================================================================
 
 /**
- * 摆设的摆放矩阵：先绕 y 转 rot、再放到 (x, GRASS_Y, z)。
- * 必须和「obj.position.set(x, GRASS_Y, z) + obj.rotation.y = rot」完全一致，
+ * 摆设的摆放矩阵：先绕 y 转 rot、再放到 (x, y, z)；y 默认是草地（水面 / 空中见 props.ts 的 propBaseY）。
+ * 必须和「obj.position.set(x, y, z) + obj.rotation.y = rot」完全一致，
  * 拾取盒和拖动时都用它从原点处的包围盒算出区域局部坐标的包围盒。
  */
-function propMatrix(pos: Vec2, rot: number) {
-  return new THREE.Matrix4().makeRotationY(rot).setPosition(pos[0], GRASS_Y, pos[1]);
+function propMatrix(pos: Vec2, rot: number, y = GRASS_Y) {
+  return new THREE.Matrix4().makeRotationY(rot).setPosition(pos[0], y, pos[1]);
 }
 
 /** 一棵子树里的点光源（灯光登记表的登记 / 摘除都按这个来） */

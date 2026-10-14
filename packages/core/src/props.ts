@@ -73,6 +73,16 @@ function vertexRockMat(ctx: ThemeCtx): THREE.MeshStandardMaterial {
 }
 
 /**
+ * 摆设的落位基准 y（区域局部坐标）：默认坐在草地上；params.water 让它落在水面（海面那一层），
+ * params.air 再把它从基准抬高 air 米（云、热气球这类要放到天上的东西）。
+ * 摆放（placer）、渲染（world-layer 的 placeProps / moveProp）用的是同一个函数，
+ * 所以烘焙前后、拖动预览和最终落位才会一致。
+ */
+export function propBaseY(seaY: number, params?: Record<string, unknown>): number {
+  return (params?.water === true ? seaY : GRASS_Y) + num(params?.air);
+}
+
+/**
  * 整体抬高 y 米（广场家具坐在铺装上、云飘在不同高度、热气球 4 米高……）。
  * 抬高量放在内层节点上，返回的根节点 y 恒为 0（= 草地）。
  * 摆放方按「y = GRASS_Y + 根节点 y」落位（placer 和 world-layer 的 placeProps 都是），
@@ -852,8 +862,8 @@ function placer(ctx: ThemeCtx, sink: PlacedProp[] | null): PropPlace {
       setState(stream);
     }
     if (!obj) return;
-    // build() 的根节点 y 是相对草地的抬高（长椅坐在铺装上、热气球在天上）：要加上 GRASS_Y
-    obj.position.set(x, GRASS_Y + obj.position.y, z);
+    // 落位：草地 / 水面 / 空中（见 propBaseY），再加上 build() 根节点自己的抬高
+    obj.position.set(x, propBaseY(ctx.seaY, p.params) + obj.position.y, z);
     if (p.rot) obj.rotation.y = p.rot;
     ctx.raw.add(obj);
   };

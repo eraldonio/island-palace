@@ -26,6 +26,12 @@ const GRASS_Y = -.15;
 const PEEK_DELAY = 280;
 /** 摆设之间的最小间距 / 和宫殿地块、广场的额外退让 */
 const PROP_GAP = .6;
+/** 海面 / 空中能摆多远：离最远的海岸线之外这么多米 */
+const PROP_OUT = 30;
+/** 每个摆设都有的通用参数：离落位基准的高度（米）——云、热气球这类可以放到天上去 */
+const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: -3, max: 40, step: .1, def: 0 };
+/** 卡片上显示的参数：种类自己的 + 通用高度 */
+const propSpecs = (kind: PropKind | undefined): ParamSpec[] => [...(kind?.params || []), PROP_ALT];
 /** 便签吸附的网格（和编辑器里物件摆放一致：5 cm） */
 const NOTE_GRID = .05;
 const snapNote = (n: number) => Math.round(n / NOTE_GRID) * NOTE_GRID;
@@ -726,13 +732,15 @@ export class TownController {
     const at = this.selectedProp && this.propAt(this.selectedProp);
     if (!at) { card.classList.add('kp-hidden'); return; }
     const kind = propKind(at.prop.kind);
-    const specs = kind?.params || [];
+    const specs = propSpecs(kind);
+    const water = at.prop.params?.water === true;
     card.replaceChildren(html`
       <button class="kp-close" data-act="propDeselect">×</button>
       <div class="kp-room">${kind ? t(kind.category) : ''} · ${t('摆设')}</div>
       <h3>${kind ? t(kind.name) : at.prop.kind}</h3>
-      ${specs.length ? html`<div class="kp-params">${specs.map(spec => propParamField(spec, at.prop.params?.[spec.key] ?? spec.def))}</div>` : ''}
+      <div class="kp-params">${specs.map(spec => propParamField(spec, at.prop.params?.[spec.key] ?? spec.def))}</div>
       <div class="kp-row">
+        <button data-act="propWater" class="${water ? 'kp-on' : ''}" title="${water ? t('让它回到地面（海面上是坐在水面那一层）') : t('让它落在水面上（船、浮冰、礁石这类）')}">${water ? t('贴水面') : t('贴地面')}</button>
         <button data-act="propRotate" title="${t('旋转 90°（R）')}">${rich(ICONS.rotr)} ${t('旋转')}</button>
         <button data-act="propDuplicate" title="${t('复制一份（⌘D）')}">${t('复制')}</button>
         <button class="kp-danger" data-act="propDelete" title="${t('删除这个摆设')}">${t('删除')}</button>
@@ -826,7 +834,7 @@ export class TownController {
     const param = el.dataset?.param;
     if (param && this.selectedProp) {
       const at = this.propAt(this.selectedProp);
-      const spec = at && propKind(at.prop.kind)?.params?.find(p => p.key === param);
+      const spec = at && propSpecs(propKind(at.prop.kind)).find(p => p.key === param);
       if (!spec) return;
       if (spec.options) {
         this.setPropParam(param, spec.options[Number(el.value)]?.[0], !commit);
@@ -1064,17 +1072,22 @@ export class TownController {
     return propKind(prop.kind)?.blocker ?? .5;
   }
 
-  /** 这个位置放不放得下：草地上、不压宫殿地块、不和别的摆设挤在一起 */
+  /** 这个位置放不放得下：草地、海面、空中都行；宫殿地块 / 广场 / 别的摆设还是要让开 */
   private propFits(region: W.WorldRegion, layer: RegionLayer, prop: W.PlacedProp): boolean {
     const [x, z] = prop.pos;
-    if (!layer.onLand(x, z, .4)) return false;
     const r = this.propRadius(prop);
-    if (region.palaces.length > 0 && Math.hypot(x, z) < W.PLAZA_R + r + PROP_GAP) return false;
-    for (const placed of region.palaces) {
-      const doc = this.docs.get(placed.palaceId);
-      if (!doc) continue;
-      const [x0, z0, x1, z1] = W.placedLot(placed, doc);
-      if (x > x0 - r - PROP_GAP && x < x1 + r + PROP_GAP && z > z0 - r - PROP_GAP && z < z1 + r + PROP_GAP) return false;
+    if (layer.onLand(x, z, .4)) {
+      if (region.palaces.length > 0 && Math.hypot(x, z) < W.PLAZA_R + r + PROP_GAP) return false;
+      for (const placed of region.palaces) {
+        const doc = this.docs.get(placed.palaceId);
+        if (!doc) continue;
+        const [x0, z0, x1, z1] = W.placedLot(placed, doc);
+        if (x > x0 - r - PROP_GAP && x < x1 + r + PROP_GAP && z > z0 - r - PROP_GAP && z < z1 + r + PROP_GAP) return false;
+      }
+    } else {
+      // 海面 / 空中：没有地块要避让，只要还在这座岛这一圈里（别把东西扔到看不见的地方）
+      const [cx, cz] = layer.center;
+      if (Math.hypot(x - cx, z - cz) > layer.maxR + PROP_OUT) return false;
     }
     for (const other of W.propsOf(region)) {
       if (other === prop) continue;
@@ -1082,6 +1095,17 @@ export class TownController {
       if (Math.hypot(other.pos[0] - x, other.pos[1] - z) < gap) return false;
     }
     return true;
+  }
+
+  /**
+   * 落点是草地还是水面：水面上的摆设坐在海面那一层（船、浮冰、礁石才像在水里），
+   * 离开水面就把这个标记去掉。空中另算——那是「高度」参数（air），见卡片上的滑杆。
+   */
+  private markWater(layer: RegionLayer, prop: W.PlacedProp) {
+    const params = { ...(prop.params || {}) };
+    if (layer.onLand(prop.pos[0], prop.pos[1], .4)) delete params.water;
+    else params.water = true;
+    prop.params = params;
   }
 
   /** 新摆设的落点：从镜头中心开始向外螺旋找第一块空地（找不到就先放在中心，用户可以再挪） */
@@ -1107,11 +1131,12 @@ export class TownController {
     const pos = this.freePropSpot(region, layer, kind, [Math.round(v.orbit.target.x - ox), Math.round(v.orbit.target.z - oz)]);
     const before = this.snapshot();
     const prop = W.addProp(region, kindId, pos, 0);
+    this.markWater(layer, prop); // 镜头对着海面时就从水面上开始
     this.town.rebuildProps(region.id);
     this.propPlacing = { prop, regionId: region.id, before, valid: true, down: null };
     this.selectProp(prop.id);
     v.root.classList.add('kp-town-placing');
-    v.ui.townPlaceHint.replaceChildren(html`${rich(t('把「{name}」放到岛上：点击空地放下 · <b>R</b> 旋转 · <b>Esc</b> 取消', { name: escapeHtml(t(kind.name)) }))}`);
+    v.ui.townPlaceHint.replaceChildren(html`${rich(t('把「{name}」放到草地、海面或空中：点击放下 · <b>R</b> 旋转 · <b>Esc</b> 取消', { name: escapeHtml(t(kind.name)) }))}`);
     this.updateMarker(true);
     v.invalidate();
   }
@@ -1126,7 +1151,8 @@ export class TownController {
     const pos: Vec2 = [Math.round(g[0]), Math.round(g[1])];
     if (pos[0] === p.prop.pos[0] && pos[1] === p.prop.pos[1]) return;
     p.prop.pos = pos;
-    this.town.movePropPreview(p.regionId, p.prop.id, pos, p.prop.rot || 0);
+    this.markWater(layer, p.prop);
+    this.town.movePropPreview(p.regionId, p.prop.id, pos, p.prop.rot || 0, p.prop.params);
     p.valid = this.propFits(region, layer, p.prop);
     this.updateMarker(p.valid);
     this.v.invalidate();
@@ -1959,9 +1985,10 @@ export class TownController {
     const NATURE_KINDS = new Set<string>(PLANT_KINDS);
     let changed = false;
 
-    // 1. 移除掉入海里的植物
+    // 1. 移除掉入海里的植物（用户特意放在水面 / 天上的不算：那是他摆的）
     const surviving = region.props.filter(p => {
       if (!NATURE_KINDS.has(p.kind)) return true;
+      if (p.params?.water === true || p.params?.air) return true;
       const keep = layer.onLand(p.pos[0], p.pos[1], 0.2);
       if (!keep) changed = true;
       return keep;
@@ -2538,7 +2565,8 @@ export class TownController {
       const next: Vec2 = [Math.round(pg[0] + d.offset[0]), Math.round(pg[1] + d.offset[1])];
       if (next[0] !== prop.pos[0] || next[1] !== prop.pos[1]) {
         prop.pos = next;
-        this.town.movePropPreview(d.regionId, d.propId, next, prop.rot || 0);
+        this.markWater(layer, prop);
+        this.town.movePropPreview(d.regionId, d.propId, next, prop.rot || 0, prop.params);
         d.valid = this.propFits(region, layer, prop);
         d.moved = true;
         this.updateMarker(d.valid);
@@ -2563,8 +2591,9 @@ export class TownController {
         if (prop) {
           const next: Vec2 = [Math.round(g[0] + offset[0]), Math.round(g[1] + offset[1])];
           prop.pos = next;
-          this.town.movePropPreview(d.regionId, pid, next, prop.rot || 0);
-          if (!layer.onLand(next[0], next[1], 0.2)) allValid = false;
+          this.markWater(layer, prop);
+          this.town.movePropPreview(d.regionId, pid, next, prop.rot || 0, prop.params);
+          if (!this.propFits(region, layer, prop)) allValid = false;
           const propObj = this.town.propObj(d.regionId, pid);
           if (propObj) {
             const rawTarget = new THREE.Vector3(g[0] + offset[0], propObj.position.y, g[1] + offset[1]);
@@ -2898,6 +2927,20 @@ export class TownController {
       case 'pickProp': this.startPropPlacing(el.dataset.kind); return true;
       case 'propDeselect': this.selectProp(null); return true;
       case 'propRotate': this.rotateSelected(); return true;
+      case 'propWater': {
+        const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+        if (!at) return true;
+        const before = this.snapshot();
+        const params = { ...(at.prop.params || {}) };
+        if (params.water === true) delete params.water; else params.water = true;
+        at.prop.params = params;
+        this.town.rebuildProps(at.region.id);
+        this.pushUndo(before);
+        this.v.worldChanged();
+        this.v.invalidate();
+        this.renderCard();
+        return true;
+      }
       case 'propDuplicate': this.duplicateProp(); return true;
       case 'propDelete': this.deleteProp(); return true;
       case 'multiDeselect': this.clearMultiSelect(); this.updateMarker(); this.renderCard(); this.v.invalidate(); return true;
