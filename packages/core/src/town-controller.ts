@@ -2675,6 +2675,10 @@ export class TownController {
         if (d.valid) {
           this.pushUndo(d.before);
           this.v.worldChanged();
+          const holder = this.town.noteHolder(d.regionId, d.noteId);
+          const box = this.town.noteBox(d.regionId, d.noteId);
+          const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+          this.v.spawnFx.dropImpact(holder, center, 0.7);
         } else {
           note.pos = d.orig;
           this.town.moveNotePreview(d.regionId, d.noteId, d.orig, note.rot || 0);
@@ -2692,6 +2696,10 @@ export class TownController {
         if (d.valid) {
           this.pushUndo(d.before);
           this.v.worldChanged();
+          const propObj = this.town.propObj(d.regionId, d.propId);
+          const box = this.town.propBox(d.regionId, d.propId);
+          const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+          this.v.spawnFx.dropImpact(propObj, center, 1.1);
         } else {
           prop.pos = d.orig;
           this.town.movePropPreview(d.regionId, d.propId, d.orig, prop.rot || 0);
@@ -2708,6 +2716,18 @@ export class TownController {
         if (d.valid) {
           this.pushUndo(d.before);
           this.v.worldChanged();
+          for (const pid of d.propOffsets.keys()) {
+            const propObj = this.town.propObj(d.regionId, pid);
+            const box = this.town.propBox(d.regionId, pid);
+            const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+            this.v.spawnFx.dropImpact(propObj, center, 1.0);
+          }
+          for (const nid of d.noteOffsets.keys()) {
+            const holder = this.town.noteHolder(d.regionId, nid);
+            const box = this.town.noteBox(d.regionId, nid);
+            const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+            this.v.spawnFx.dropImpact(holder, center, 0.7);
+          }
         } else {
           for (const [pid, orig] of d.propOrig) {
             const prop = W.findProp(region, pid);
@@ -2732,8 +2752,11 @@ export class TownController {
     }
     const s = this.town.shells.get(d.id);
     if (s && d.moved) {
-      if (d.valid) this.commitPalaces(d.before, d.regionId);
-      else {
+      if (d.valid) {
+        this.commitPalaces(d.before, d.regionId);
+        const center = s.group.getWorldPosition(new THREE.Vector3());
+        this.v.spawnFx.dropImpact(s.group, center, 1.8);
+      } else {
         s.placed.pos = d.orig;
         this.town.placeShell(s);
         this.v.host.notify?.(t('这里放不下：离其他宫殿或广场太近了'));

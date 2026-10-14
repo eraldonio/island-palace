@@ -664,6 +664,9 @@ export class Editor {
       d.item.room = roomAt(this.v.doc, p[0], p[2])?.id ?? d.item.room;
       this.commit(d.before);
       this.renderCard(this.v.selected);
+      const s = ownBox(d.obj).getSize(new THREE.Vector3());
+      const weight = Math.max(0.7, (s.x * s.y * s.z) ** (1 / 3));
+      this.v.spawnFx.dropImpact(d.obj, undefined, weight);
     }
     return true;
   }
