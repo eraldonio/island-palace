@@ -287,24 +287,256 @@ export function lampPosts(ctx: ThemeCtx, place: PropPlace, max = 8) {
   for (const [x, z] of spots) place('lamp', x, z);
 }
 
+// =====================================================================
+// 自然撒点：树 / 灌木 / 石头……
+//
+// 不是均匀网格：每个候选点看三张噪声（大块成簇 / 中频疏密 / 细碎抖动）和一张「空地」噪声，
+// 所以有的地方密、有的地方整片空着、有的地方两棵挨在一起。
+// 逐格的判断只看它自己的格号（用独立哈希，不碰共享随机流），所以扩岛时新长出来的格子
+// 不会把已有的树挤走——同一座岛、同一个 key 永远得到同一批点。
+// =====================================================================
+
+/** 一个候选点：位置 + 这一格的簇噪声 + 稳定种子串 */
+export interface PlantSpot {
+  x: number;
+  z: number;
+  /** 低频簇噪声（约 -3..3）：负 = 林间空地，正 = 密林 */
+  cluster: number;
+  /** 这一格的稳定种子：抽这一棵的细节前先 seedFromString(spot.key) */
+  key: string;
+  i: number;
+  j: number;
+}
+
+/** 撒点参数（free 之外都由主题配方给，见 PLANT_RECIPES） */
+export interface ScatterOpts {
+  key: string;
+  spacing: number;
+  max: number;
+  keep(cluster: number): number;
+  /** 这个位置摆不摆得下（草地边界 / 宫殿地块 / 道路 / 阻挡 / 已有的摆设） */
+  free(x: number, z: number): boolean;
+  center: Vec2;
+  maxR: number;
+  /**
+   * 每个格子再细分成 sub×sub 个候选点（保留概率按面积摊薄，总疏密不变）。
+   * 给「扩岛补种」用：新长出来的陆地是一条窄边，按整格抽点抽不到几个；细分成子格以后
+   * 同一个疏密场里能抽到足够多的点，而且落点和生成时的那一套格子不重合（不会压到已有的树上）。
+   */
+  sub?: number;
+}
+
+/** 字符串命名空间 → 32 位整数（同一串只算一次） */
+const keyHashes: Record<string, number> = Object.create(null);
+function keyHash(key: string) {
+  const cached = keyHashes[key];
+  if (cached !== undefined) return cached;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  h = h >>> 0;
+  keyHashes[key] = h;
+  return h;
+}
+
+/** 格号 + 命名空间 → 0..1 的稳定哈希（不碰共享随机流：撒点的判断不能互相干扰） */
+function cell01(key: string, i: number, j: number, salt: number) {
+  let h = keyHash(key) ^ Math.imul(salt + 1, 0x9E3779B1);
+  h = Math.imul(h ^ (i | 0), 0x85EBCA6B); h ^= h >>> 13;
+  h = Math.imul(h ^ (j | 0), 0xC2B2AE35); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** 格坐标上的值噪声：freq 是「几格一个起伏」（越小越大块） */
+function lattice(key: string, i: number, j: number, freq: number, salt: number) {
+  const x = i / freq, z = j / freq;
+  const i0 = Math.floor(x), j0 = Math.floor(z);
+  const tx = x - i0, tz = z - j0;
+  const sx = tx * tx * (3 - 2 * tx), sz = tz * tz * (3 - 2 * tz);
+  const a = cell01(key, i0, j0, salt), b = cell01(key, i0 + 1, j0, salt);
+  const c = cell01(key, i0, j0 + 1, salt), d = cell01(key, i0 + 1, j0 + 1, salt);
+  return (a + (b - a) * sx) * (1 - sz) + (c + (d - c) * sx) * sz;
+}
+
 /**
- * 在抖动网格上撒点（树木等）：同一个格子的位置由种子决定，岛变大时已有的树不会乱跳。
- * keep(cluster) 返回保留概率；cluster 是 -3..3 的低频噪声，用来让树成簇。
- * place 回调负责抽这一棵的随机细节（尺寸、色彩…），再交给 props.ts 的 place()。
+ * 撒出一批「自然」的候选点：格子里随机落点 + 细碎噪声推开 + 邻近去重（密的格子互相让掉一棵），
+ * 再加上大块的空地噪声，所以会出现成片的树林和整片的空地。
  */
-export function scatter(ctx: ThemeCtx, opts: { key: string; spacing: number; max: number; pad: number; edge?: number; keep(cluster: number): number; place(x: number, z: number, i: number): void }) {
-  const S = opts.spacing, seedN = ctx.region.seed, [cx, cz] = ctx.center, R = ctx.maxR;
-  const n0 = Math.floor((cx - R) / S), n1 = Math.ceil((cx + R) / S);
-  const m0 = Math.floor((cz - R) / S), m1 = Math.ceil((cz + R) / S);
-  let count = 0;
+export function scatterSpots(seedN: number, o: ScatterOpts): PlantSpot[] {
+  const sub = Math.max(1, Math.round(o.sub ?? 1));
+  const S = o.spacing / sub, ns = `${o.key}:${seedN}`;
+  const n0 = Math.floor((o.center[0] - o.maxR) / S) - sub, n1 = Math.ceil((o.center[0] + o.maxR) / S) + sub;
+  const m0 = Math.floor((o.center[1] - o.maxR) / S) - sub, m1 = Math.ceil((o.center[1] + o.maxR) / S) + sub;
+  const cache: Record<number, PlantSpot | null> = Object.create(null);
+  const at = (i: number, j: number): PlantSpot | null => {
+    const slot = (i - n0) * (m1 - m0 + 4) + (j - m0);
+    const hit = cache[slot];
+    if (hit !== undefined) return hit;
+    // 疏密场按「整格」采样（子格索引除以 sub），所以细分不会改变树林 / 空地的尺度
+    const ci = i / sub, cj = j / sub;
+    // 成簇：三张不同频率的噪声叠起来（越大块越明显）
+    const cluster = (lattice(ns, ci, cj, 26, 1) - .5) * 3.4
+      + (lattice(ns, ci, cj, 9, 2) - .5) * 2.2
+      + (lattice(ns, ci, cj, 3, 3) - .5) * 1.1;
+    // 空地：另一张更稀疏的噪声，低的地方整片几乎不长东西（林间空地 / 石滩）
+    const patch = (lattice(ns, ci, cj, 7, 4) - .5) * 2;
+    const field = .1 + 1.05 * Math.max(0, Math.min(1, (patch + .3) / .75));
+    const p = Math.max(0, Math.min(1, o.keep(cluster) * field)) / (sub * sub);
+    let spot: PlantSpot | null = null;
+    if (cell01(ns, i, j, 5) < p) {
+      const x = (i + .08 + .84 * cell01(ns, i, j, 6)) * S + (lattice(ns, ci, cj, 1.6, 7) - .5) * S * .5;
+      const z = (j + .08 + .84 * cell01(ns, i, j, 8)) * S + (lattice(ns, ci, cj, 1.6, 9) - .5) * S * .5;
+      spot = { x, z, cluster, key: `${ns}:${i}:${j}`, i, j };
+    }
+    cache[slot] = spot;
+    return spot;
+  };
+  const kept: { spot: PlantSpot; pri: number }[] = [];
+  const r2 = (S * .62) ** 2;
   for (let j = m0; j <= m1; j++) for (let i = n0; i <= n1; i++) {
-    seedFromString(`${opts.key}:${seedN}:${i}:${j}`);
-    const x = (i + rr(.15, .85)) * S, z = (j + rr(.15, .85)) * S;
-    const cluster = Math.sin(x * .09 + seedN) + Math.cos(z * .11 - seedN * .7) + Math.sin((x + z) * .05);
-    if (rand() >= opts.keep(cluster) || !free(ctx, x, z, opts.pad, opts.edge)) continue;
-    if (count++ >= opts.max) return;
-    opts.place(x, z, count);
+    const spot = at(i, j);
+    if (!spot || !o.free(spot.x, spot.z)) continue;
+    const pri = cell01(ns, i, j, 10);
+    // 邻近去重：紧挨着的两棵只留优先级高的那棵（密林里自然稀疏，空地不受影响）
+    let dup = false;
+    for (const [di, dj] of [[1, 0], [0, 1], [1, 1], [1, -1]] as [number, number][]) {
+      const other = at(i + di, j + dj);
+      if (!other) continue;
+      if ((other.x - spot.x) ** 2 + (other.z - spot.z) ** 2 >= r2) continue;
+      if (cell01(ns, i + di, j + dj, 10) > pri) { dup = true; break; }
+    }
+    if (!dup) kept.push({ spot, pri });
   }
+  // 超过上限时按优先级丢，而不是砍掉某一个方向（不然远处会出现整片空地）
+  if (kept.length > o.max) {
+    kept.sort((a, b) => b.pri - a.pri);
+    kept.length = o.max;
+  }
+  return kept.map(k => k.spot).sort((a, b) => (a.i - b.i) || (a.j - b.j));
+}
+
+/**
+ * 在岛上撒点（树木等）：place 回调负责摆这一棵（见 plantAt）。
+ * 细节用共享随机流抽，所以回调开始前先按这一格的种子定位（同一座岛每次都一样）。
+ */
+export function scatter(ctx: ThemeCtx, opts: Omit<ScatterOpts, 'center' | 'maxR' | 'free'> & { pad: number; edge?: number; free?(x: number, z: number): boolean; place(x: number, z: number, spot: PlantSpot): void }) {
+  const spots = scatterSpots(ctx.region.seed, {
+    key: opts.key, spacing: opts.spacing, max: opts.max, keep: opts.keep, sub: opts.sub,
+    free: opts.free || ((x, z) => free(ctx, x, z, opts.pad, opts.edge)),
+    center: ctx.center, maxR: ctx.maxR,
+  });
+  for (const spot of spots) {
+    seedFromString(spot.key);
+    opts.place(spot.x, spot.z, spot);
+  }
+}
+
+/**
+ * 主题的自然植被配方：撒点参数 + 树种搭配。
+ * 主题自己的 props() 和「扩岛补种」（town-controller 的 syncVegetation）用的是同一份配方，
+ * 所以新扩出来的陆地上长出来的东西和原来的林子是一套。
+ */
+export interface PlantRecipe {
+  key: string;
+  spacing: number;
+  max: number;
+  pad: number;
+  keep(cluster: number): number;
+  /** 树种搭配：kind → 权重（数字大的更常见） */
+  mix: [string, number][];
+  /** 叶色候选（LEAF 序号） */
+  tones: number[];
+  /** 高度范围（米） */
+  h: [number, number];
+  /** 灌木大小范围 */
+  shrub?: [number, number];
+  /** 针叶树积雪 */
+  snow?: boolean;
+  /** boulder 用的材质名 */
+  mat?: string;
+}
+
+export const PLANT_RECIPES: Record<string, PlantRecipe> = {
+  island: {
+    key: 'tree', spacing: 4.6, max: 160, pad: 2, keep: c => .68 + c * .24,
+    mix: [['tree', 5], ['broadleaf', 3], ['palm', 2], ['shrub', 3]],
+    tones: [LEAF.leaf, LEAF.leafLight, LEAF.leafDark, LEAF.leafOlive], h: [2.4, 4.6], shrub: [.35, .6],
+  },
+  forest: {
+    key: 'forest', spacing: 3.6, max: 280, pad: 1.8, keep: c => 1.15 + c * .26,
+    mix: [['conifer', 7], ['tree', 3], ['birch', 3], ['broadleaf', 2], ['dead-tree', .7], ['shrub', 2]],
+    tones: [LEAF.leaf, LEAF.leafDark, LEAF.leafOlive, LEAF.leafLight], h: [2.8, 5.4], shrub: [.35, .55],
+  },
+  snow: {
+    key: 'pine', spacing: 4, max: 220, pad: 1.8, keep: c => .95 + c * .24,
+    mix: [['conifer', 10], ['dead-tree', 1.2], ['shrub', .8], ['boulder', 1.4]],
+    tones: [LEAF.leafDark, LEAF.leafOlive], h: [2.8, 4.8], snow: true, shrub: [.35, .7], mat: 'floe',
+  },
+  sky: {
+    key: 'sky-tree', spacing: 4.4, max: 150, pad: 2, keep: c => .82 + c * .24,
+    mix: [['tree', 4], ['broadleaf', 3], ['birch', 2], ['blossom-tree', 2], ['palm', 1], ['shrub', 3]],
+    tones: [LEAF.leafLight, LEAF.leaf, LEAF.leafOlive, LEAF.leafDark], h: [2.4, 3.8], shrub: [.35, .55],
+  },
+};
+
+/** 自然植被的 kind：缩岛时要清理、扩岛时要补种的就是这些（人工摆设不会被自动清掉） */
+export const PLANT_KINDS = ['tree', 'broadleaf', 'birch', 'palm', 'dead-tree', 'conifer', 'shrub', 'flower', 'reed', 'blossom-tree', 'boulder', 'snowdrift'] as const;
+
+/** 按权重抽树种：掺一点低频簇噪声，所以同一片林子偏向同一个树种，不会一棵一个样 */
+function pickMix(mix: [string, number][], cluster: number, r: number) {
+  let total = 0;
+  for (const [, w] of mix) total += w;
+  const t = ((r * .72 + (cluster * .06 + .5) * .28) % 1 + 1) % 1 * total;
+  let acc = 0;
+  for (const [kind, w] of mix) { acc += w; if (t <= acc) return kind; }
+  return mix[mix.length - 1][0];
+}
+
+/**
+ * 按主题配方在 (x, z) 栽一棵：树种、高度、叶色、朝向、树冠 / 树干参数全部现抽。
+ * 抽之前先按 spot.key 定位随机流，所以同一格永远是同一棵（烘焙前后、扩岛补种都一致）。
+ * 返回实际落下的 kind。
+ */
+export function plantAt(place: PropPlace, spot: PlantSpot, themeId: string): string {
+  const r = PLANT_RECIPES[themeId] || PLANT_RECIPES.island;
+  seedFromString(spot.key);
+  const kind = pickMix(r.mix, spot.cluster, rand());
+  const leaf = r.tones[Math.floor(rand() * r.tones.length)] ?? LEAF.leaf;
+  const h = rr(r.h[0], r.h[1]);
+  const rot = rand() * Math.PI * 2;
+  if (kind === 'conifer') {
+    coniferAt(place, spot.x, spot.z, h, r.snow === true, leaf);
+  } else if (kind === 'shrub') {
+    shrubAt(place, spot.x, spot.z, rr(...(r.shrub || [.35, .55])), leaf, r.tones[(r.tones.indexOf(leaf) + 1) % r.tones.length]);
+  } else if (kind === 'boulder') {
+    const s = rr(.35, .8);
+    place('boulder', spot.x, spot.z, { rot, params: { mat: r.mat || 'boulder', s, y: s * .3, sy: rr(.55, .7), rx: rr(0, 3), ry: rr(0, 3) } });
+  } else if (kind === 'blossom-tree') {
+    place('blossom-tree', spot.x, spot.z, { rot, params: { h, w: rr(.8, 1.4), lean: rr(0, .14), color: rand() < .75 ? 'blossom' : 'rose' } });
+  } else {
+    // 树：轮廓 / 树冠宽度 / 树干粗细 / 弯曲都掺随机，所以同一片林子里没有两棵一样
+    place(kind, spot.x, spot.z, {
+      rot,
+      params: {
+        h, leaf,
+        w: rr(.78, 1.35),
+        trunk: rr(.75, 1.3),
+        shape: rand() < .42 ? 0 : rand() < .55 ? 1 : rand() < .5 ? 2 : 3,
+        lean: rr(0, .22),
+        fronds: 6 + Math.floor(rand() * 4),
+        branches: 3 + Math.floor(rand() * 4),
+      },
+    });
+  }
+  return kind;
+}
+
+/** 按主题配方撒一整岛的植被（主题的 props() 用这个；扩岛补种走同一份配方） */
+export function plantScatter(ctx: ThemeCtx, themeId: string, place: PropPlace) {
+  const r = PLANT_RECIPES[themeId] || PLANT_RECIPES.island;
+  scatter(ctx, {
+    key: r.key, spacing: r.spacing, max: r.max, pad: r.pad, keep: r.keep,
+    place: (_x, _z, spot) => { plantAt(place, spot, themeId); },
+  });
 }
 
 /** 沿海岸一圈（往里 inset 米）按间距调用 place */
@@ -337,18 +569,24 @@ export function seaRocks(ctx: ThemeCtx, place: PropPlace, n: number, mat: string
   }
 }
 
-/** 灌木（摆放用）：随机细节在这里抽完，几何见 props.ts 的 shrub */
+/** 灌木（摆放用）：团数 / 展开 / 两色叶子的细节都在这里抽，几何见 props.ts 的 shrub */
 export function shrubAt(place: PropPlace, x: number, z: number, s: number, leafA: number, leafB: number) {
-  const second = rand() < .5;
-  const dx = second ? rr(-.5, .5) : 0, dz = second ? rr(-.5, .5) : 0;
-  place('shrub', x, z, { params: { s, leafA, leafB, second, dx, dz } });
+  const blobs = 2 + Math.floor(rand() * 3);
+  const spread = rr(.7, 1.35);
+  place('shrub', x, z, { params: { s, leafA, leafB, blobs, spread } });
 }
 
-/** 针叶树（摆放用）：几何见 props.ts 的 conifer */
-export function coniferAt(place: PropPlace, x: number, z: number, h: number, snow = false) {
-  const leaf = rand() < .5 ? 'pine' : 'pineLight';
-  const tier = [rr(0, 1), rr(0, 1), rr(0, 1)];
-  place('conifer', x, z, { params: { h, snow, leaf, tier } });
+/** 针叶树的叶色候选（顺序和 props.ts 里 conifer 的参数选项一致，改一边要改另一边） */
+const CONIFER_TONES = ['pine', 'pineLight', 'leafDark', 'leafOlive'];
+
+/** 针叶树（摆放用）：叶色 / 层数 / 树冠宽度都在这里抽，几何见 props.ts 的 conifer */
+export function coniferAt(place: PropPlace, x: number, z: number, h: number, snow = false, tone?: number) {
+  const i = tone ?? Math.floor(rand() * 2);
+  const leaf = CONIFER_TONES[((i % CONIFER_TONES.length) + CONIFER_TONES.length) % CONIFER_TONES.length];
+  const tiers = 3 + Math.floor(rand() * 2);
+  const tier: number[] = [];
+  for (let k = 0; k < tiers; k++) tier.push(rr(0, 1));
+  place('conifer', x, z, { params: { h, snow, leaf, tier, tiers, spread: rr(.8, 1.25) } });
 }
 
 /** 按顶点随机扰动（低多边形岩石 / 山体） */

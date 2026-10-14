@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { rand, rr, seedFromString } from '../random';
 import {
   GRASS_Y, LEAF, type ThemePack, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot, innerSpot,
-  lampPosts, scatter, coniferAt, alongShore, shrubAt, seaRocks,
+  lampPosts, plantScatter, alongShore, shrubAt, seaRocks,
 } from './common';
 import { decorateNow } from '../props';
 
@@ -75,18 +75,8 @@ export const forest: ThemePack = {
       }
     }
     lampPosts(ctx, place, 6);
-    const LEAVES = [LEAF.leaf, LEAF.leafDark, LEAF.leafOlive];
-    scatter(ctx, {
-      key: 'forest', spacing: 3.6, max: 280, pad: 1.8, keep: c => .64 + c * .18,
-      place: (x, z) => {
-        const k = rand();
-        if (k < .56) coniferAt(place, x, z, rr(3.2, 5.4));
-        else if (k < .86) {
-          const h = rr(2.8, 4.4), variant = rand() < .5 ? 0 : 2, rot = rand() * Math.PI * 2;
-          place('tree', x, z, { rot, params: { h, variant } });
-        } else shrubAt(place, x, z, rr(.35, .55), LEAVES[1], LEAVES[2]);
-      },
-    });
+    // 植被：噪声撒点（针叶林成片、白桦 / 阔叶树混生、林间空地不长东西）
+    plantScatter(ctx, 'forest', place);
     // 倒下的原木
     seedFromString('logs:' + ctx.region.seed);
     for (let i = 0; i < 3; i++) {

@@ -18,5 +18,19 @@ export function rand() {
   return ((t ^ t >>> 14) >>> 0) / 4294967296;
 }
 
+/**
+ * 随机流的存档 / 读档（原样恢复，不经过 seed 的「0 换成 1」）。
+ * 摆放（决定位置 / 参数）和建几何（树的团块、岩石的棱角）共用这一条流：建几何一跑就可能
+ * 用 params.seed 把流重设掉，同一段摆放代码在「建几何」和「只记录」两条路上就会分岔。
+ * 所以建几何前后要存档 / 读档（见 props.ts 的 placer），摆放那边才只看摆放。
+ */
+export function getState(): number {
+  return state;
+}
+
+export function setState(s: number) {
+  state = s | 0;
+}
+
 export const rr = (a: number, b: number) => a + (b - a) * rand();
 export const pick = <T>(arr: T[]): T => arr[Math.floor(rand() * arr.length)];

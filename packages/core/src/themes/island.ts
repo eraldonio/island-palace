@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { rand, rr } from '../random';
 import {
   GRASS_Y, LEAF, type ThemePack, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot,
-  lampPosts, scatter, alongShore, shrubAt, seaRocks,
+  lampPosts, plantScatter, alongShore, shrubAt, seaRocks,
 } from './common';
 import { decorateNow } from '../props';
 
@@ -50,18 +50,17 @@ export const island: ThemePack = {
     const p = edgeSpot(ctx, 95, 1.2, 3);
     if (p) place('pier', p.x, p.z, { rot: Math.atan2(Math.cos(p.a), Math.sin(p.a)), params: { angle: p.a } });
     lampPosts(ctx, place);
-    scatter(ctx, {
-      key: 'tree', spacing: 4.6, max: 160, pad: 2, keep: c => .42 + c * .24,
-      place: (x, z) => {
-        const h = rr(2.5, 3.9), variant = Math.floor(rand() * 3), kind = rand();
-        if (kind < .72) place('tree', x, z, { rot: rand() * Math.PI * 2, params: { h, variant } });
-        else shrubAt(place, x, z, rr(.35, .6), LEAVES[variant], LEAVES[(variant + 1) % 3]);
-      },
-    });
+    // 植被：噪声撒点（成片的林子和林间空地），树种 / 大小 / 叶色按海岛配方现抽
+    plantScatter(ctx, 'island', place);
+    // 岸线：椰林、灌木和花丛
     alongShore(ctx, 'shore', 4.2, [1, 1.8], (x, z, i) => {
       if (rand() < .3) return;
       const s = rr(.35, .6);
-      shrubAt(place, x, z, s, LEAVES[i % 3], LEAVES[(i + 1) % 3]);
+      if (rand() < .4) {
+        place('palm', x, z, { rot: rand() * Math.PI * 2, params: { h: rr(3, 5.4), fronds: 6 + Math.floor(rand() * 5), lean: rr(.08, .4), leaf: LEAVES[i % 3] } });
+      } else {
+        shrubAt(place, x, z, s, LEAVES[i % 3], LEAVES[(i + 1) % 3]);
+      }
       if (rand() < .35) place('flower', x + .2, z + .1, { params: { color: FLOWERS[i % 3], h: s * 1.1 } });
     });
     seaRocks(ctx, place, 9, 'rock');

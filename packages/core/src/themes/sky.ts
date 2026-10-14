@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { rand, rr, seedFromString } from '../random';
 import {
   GRASS_Y, LEAF, type ThemePack, type ThemeCtx, type PropPlace, outline, extrudeLand, addLand, plazaBase, plazaBenches, edgeSpot,
-  lampPosts, scatter, alongShore, shrubAt, jitter,
+  lampPosts, plantScatter, alongShore, shrubAt, jitter,
 } from './common';
 import { decorateNow } from '../props';
 
@@ -65,17 +65,8 @@ export const sky: ThemePack = {
       });
     }
     lampPosts(ctx, place, 6);
-    scatter(ctx, {
-      key: 'sky-tree', spacing: 4.4, max: 150, pad: 2, keep: c => .45 + c * .22,
-      place: (x, z) => {
-        const k = rand();
-        if (k < .55) {
-          const h = rr(2.4, 3.6), rot = rand() * Math.PI * 2;
-          place('tree', x, z, { rot, params: { h, variant: 1 } });
-        } else if (k < .82) place('blossom-tree', x, z, { params: { h: rr(2.2, 3.2) } });
-        else shrubAt(place, x, z, rr(.35, .55), LEAVES[0], LEAVES[2]);
-      },
-    });
+    // 植被：噪声撒点（阔叶树 / 白桦 / 樱花成片，林间空地不长东西）
+    plantScatter(ctx, 'sky', place);
     alongShore(ctx, 'flowers', 3.8, [.8, 1.6], (x, z, i) => {
       if (rand() < .35) return;
       const s = rr(.3, .5);

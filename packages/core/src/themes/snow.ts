@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { rand, rr, seed, seedFromString } from '../random';
 import {
   GRASS_Y, type ThemePack, type ThemeCtx, type PropPlace, outline, flatPatch, extrudeLand, plazaBase, plazaBenches, edgeSpot, innerSpot,
-  lampPosts, scatter, coniferAt, alongShore,
+  lampPosts, plantScatter, alongShore,
 } from './common';
 import { decorateNow } from '../props';
 
@@ -57,16 +57,8 @@ export const snow: ThemePack = {
     const ig = innerSpot(ctx, 2.6, 'igloo');
     if (ig) place('igloo', ig.x, ig.z);
     lampPosts(ctx, place, 6);
-    scatter(ctx, {
-      key: 'pine', spacing: 4, max: 220, pad: 1.8, keep: c => .5 + c * .22,
-      place: (x, z) => {
-        if (rand() < .86) coniferAt(place, x, z, rr(2.8, 4.8), true);
-        else {
-          const s = rr(.35, .7);
-          place('boulder', x, z, { params: { mat: 'floe', s, y: s * .3, sy: .6 } });
-        }
-      },
-    });
+    // 植被：噪声撒点（积雪的针叶林、枯树、雪堆似的石头）
+    plantScatter(ctx, 'snow', place);
     alongShore(ctx, 'snowdrift', 3.6, [.5, 1.3], (x, z) => {
       if (rand() < .4) return;
       const s = rr(.4, .8), rot = rr(0, 3);

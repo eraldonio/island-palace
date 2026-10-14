@@ -3,7 +3,8 @@ import type { PalaceView } from './view';
 import { type PalaceDoc, type Vec2 } from './schema';
 import type { PropHit, NotePick, RegionLayer } from './world-layer';
 import type { ParamSpec } from './catalog';
-import { propKind, propKinds, type PropKind } from './props';
+import { propKind, propKinds, placedProp, type PropKind } from './props';
+import { plantAt, scatterSpots, PLANT_KINDS, PLANT_RECIPES } from './themes/common';
 import { ThumbnailRenderer } from './thumbs';
 import { ICONS, escapeHtml, timeAgo } from './icons';
 import { html, rich } from './dom';
@@ -1954,7 +1955,7 @@ export class TownController {
    */
   private syncVegetation(region: W.WorldRegion, layer: RegionLayer) {
     if (!region.props) return;
-    const NATURE_KINDS = new Set(['tree', 'conifer', 'shrub', 'flower', 'reed', 'blossom-tree', 'boulder', 'snowdrift']);
+    const NATURE_KINDS = new Set<string>(PLANT_KINDS);
     let changed = false;
 
     // 1. 移除掉入海里的植物
@@ -1965,42 +1966,43 @@ export class TownController {
       return keep;
     });
 
-    // 2. 检查新陆地并适量补种植物
+    // 2. 新长出来的陆地按主题配方补种：和程序化生成共用同一个撒点器（成片的林子 + 林间空地），
+    //    而不是均匀网格（以前这里是一个 4.5 米的硬网格 + Math.random，扩出来的地方一眼就是格子）
+    const recipe = PLANT_RECIPES[region.theme] || PLANT_RECIPES.island;
     const [cx, cz] = layer.center;
-    const maxR = layer.maxR;
-    const step = 4.5;
-    let addedCount = 0;
-    const maxAdd = 12;
-
-    const n0 = Math.floor((cx - maxR) / step), n1 = Math.ceil((cx + maxR) / step);
-    const m0 = Math.floor((cz - maxR) / step), m1 = Math.ceil((cz + maxR) / step);
-
-    for (let j = m0; j <= m1 && addedCount < maxAdd; j++) {
-      for (let i = n0; i <= n1 && addedCount < maxAdd; i++) {
-        const x = (i + 0.5) * step;
-        const z = (j + 0.5) * step;
-        if (!layer.onLand(x, z, 1.8)) continue;
-
-        // 检查附近是否已经有任何摆设
-        const hasNear = surviving.some(p => Math.hypot(p.pos[0] - x, p.pos[1] - z) < 3.2);
-        if (hasNear) continue;
-
-        // 根据主题风格选择自然植物种类
-        let kind = 'tree';
-        let params: Record<string, unknown> = {};
-        if (region.theme === 'snow') {
-          kind = 'conifer';
-          params = { h: 2.8, snow: true, leaf: 'pine' };
-        } else if (region.theme === 'sky') {
-          kind = Math.random() < 0.4 ? 'blossom-tree' : 'tree';
-          params = { h: 2.6, variant: 1 };
-        } else {
-          kind = Math.random() < 0.65 ? 'tree' : 'shrub';
-          params = { h: 2.8, variant: 0 };
+    const CELL = 3.2, GAP = 3;
+    const grid = new Map<string, [number, number][]>();
+    const remember = (x: number, z: number) => {
+      const k = `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
+      const list = grid.get(k);
+      if (list) list.push([x, z]); else grid.set(k, [[x, z]]);
+    };
+    for (const p of surviving) remember(p.pos[0], p.pos[1]);
+    /** GAP 米内有别的摆设就不种：给手动拖过来的摆设让位置 */
+    const crowded = (x: number, z: number) => {
+      for (let i = Math.floor((x - GAP) / CELL); i <= Math.floor((x + GAP) / CELL); i++) {
+        for (let j = Math.floor((z - GAP) / CELL); j <= Math.floor((z + GAP) / CELL); j++) {
+          for (const [px, pz] of grid.get(`${i},${j}`) || []) if (Math.hypot(px - x, pz - z) < GAP) return true;
         }
+      }
+      return false;
+    };
+    const spots = scatterSpots(region.seed, {
+      key: recipe.key, spacing: recipe.spacing, max: recipe.max, keep: recipe.keep,
+      center: [cx, cz], maxR: layer.maxR, sub: 3,
+      free: (x, z) => layer.onLand(x, z, 1.6) && !crowded(x, z),
+    });
 
-        const id = `${kind}-${Math.floor(Math.random() * 1e8).toString(36)}`;
-        surviving.push({ id, kind, pos: [Math.round(x * 10) / 10, Math.round(z * 10) / 10], params: { ...params, seed: Math.floor(Math.random() * 1e6) } });
+    let addedCount = 0;
+    const maxAdd = 12;   // 一次捏形最多补几棵，免得拖动时把整座岛重排
+    for (const spot of spots) {
+      if (addedCount >= maxAdd) break;
+      if (!layer.onLand(spot.x, spot.z, 1.6) || crowded(spot.x, spot.z)) continue;
+      const sink: W.PlacedProp[] = [];
+      plantAt((kind, x, z, opts) => { sink.push(placedProp(region, kind, x, z, opts)); }, spot, region.theme);
+      for (const p of sink) {
+        surviving.push(p);
+        remember(p.pos[0], p.pos[1]);
         addedCount++;
         changed = true;
       }
