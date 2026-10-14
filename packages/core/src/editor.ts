@@ -640,8 +640,10 @@ export class Editor {
       // 空中物理悬浮与跟随：根据未吸附的地面交点提供自然平滑与侧倾
       const rawG = this.planeHit(e, 0);
       if (rawG) {
-        const rawTarget = new THREE.Vector3(rawG.x + d.offset.x, d.obj.position.y, rawG.z + d.offset.z);
-        this.v.spawnFx.updateDrag(d.obj, d.obj.position, rawTarget, d.obj.rotation.y, 0.12);
+        const p = itemPose(this.v.doc.items, d.item).pos;
+        const snappedTarget = new THREE.Vector3(p[0], p[1], p[2]);
+        const rawTarget = new THREE.Vector3(rawG.x + d.offset.x, p[1], rawG.z + d.offset.z);
+        this.v.spawnFx.updateDrag(d.obj, snappedTarget, rawTarget, d.obj.rotation.y, 0.12);
       }
     }
     this.v.setCursor('grabbing');

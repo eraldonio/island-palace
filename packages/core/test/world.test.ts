@@ -276,3 +276,15 @@ describe('便签：贴地几何', () => {
     expect([cx, cz]).toEqual([3, -2]);                    // 中心就是 pos
   });
 });
+
+describe('便签：贴图分辨率预算', () => {
+  it('默认尺寸满密度；尺寸涨上去自动降密度，像素总数不超过旧的最大便签', () => {
+    expect(W.noteCanvasSize(2, 1.5)).toEqual([768, 576]);      // 满密度（384 ppm）
+    expect(W.noteCanvasSize(6, 6)).toEqual([2304, 2304]);      // 旧尺寸上限：仍是满密度，就是预算本身
+    const [bw, bh] = W.noteCanvasSize(W.NOTE_SIZE.max, W.NOTE_SIZE.max);
+    expect(bw * bh).toBeLessThanOrEqual(2304 * 2304);          // 40 m 方签：像素不涨
+    expect(bw).toBeGreaterThanOrEqual(1024);                   // 但也别糊成一片
+    const [lw, lh] = W.noteCanvasSize(W.NOTE_SIZE.max, W.NOTE_SIZE.min);
+    expect(Math.max(lw, lh)).toBeLessThanOrEqual(4096);        // 长条便签守单边上限（有 GPU 就在这里失败）
+  });
+});

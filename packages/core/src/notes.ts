@@ -20,8 +20,23 @@ export const NOTE_COLORS = ['#f7f4ec', '#f5e6a3', '#cfe3c2', '#c9dcf0', '#f0cfd8
 export const NOTE_INK = '#2b2b2b';
 /** 便签贴在地面上抬起的量（米），避免和地面 z-fighting */
 export const NOTE_LIFT = .02;
-/** 贴图分辨率：每米多少像素（决定地面预览的清晰度） */
+/** 贴图分辨率上限：每米多少像素（决定地面预览的清晰度）；便签越大越往下降，见 noteCanvasSize */
 export const NOTE_PPM = 384;
+/** 单张贴图的边长上限（px）：再大就有 GPU 直接失败 */
+const TEX_MAX_SIDE = 4096;
+/** 单张贴图的像素预算：就是 6 m × 6 m（旧尺寸上限）在满分辨率下的像素数，所以便签再大也不涨显存 */
+const TEX_MAX_PX = (6 * NOTE_PPM) ** 2;
+
+/**
+ * 便签贴图的像素尺寸（= 分辨率 × 尺寸）。三重上限取最紧的一个：
+ * 满密度、单边 ≤ TEX_MAX_SIDE、总像素 ≤ TEX_MAX_PX——所以 40 m 的便签分辨率自动降到 ~1/6，
+ * 但只吃下和旧的最大便签一样多的像素。文字密度的取舍见 docs/sticky-note §10。
+ */
+export function noteCanvasSize(w: number, h: number): [number, number] {
+  const ww = Math.max(.2, w), hh = Math.max(.2, h);
+  const ppm = Math.min(NOTE_PPM, TEX_MAX_SIDE / Math.max(ww, hh), Math.sqrt(TEX_MAX_PX / (ww * hh)));
+  return [Math.max(8, Math.round(ww * ppm)), Math.max(8, Math.round(hh * ppm))];
+}
 
 const DEG = Math.PI / 180;
 const LINK = '#1a5fb4';
@@ -203,10 +218,12 @@ const fontOf = (size: number, run: NoteRun, heading: boolean) =>
  */
 export function drawNote(g: CanvasRenderingContext2D, canvas: HTMLCanvasElement, note: PlacedNote, opts: { text?: boolean } = {}) {
   const W = canvas.width, H = canvas.height;
+  // 便签太大时贴图降过分辨率，纸面的线宽 / 内边距和字号都得按实际密度算（不然会不匹配）
+  const ppm = W / Math.max(.2, note.w);
   const r = Math.min(W, H) * .06;
   g.clearRect(0, 0, W, H);
   // 纸面：圆角、内缩一点。圆角外的透明像素靠材质的 alphaTest 裁掉（不然会画成黑角）。
-  const line = Math.max(1, Math.round(NOTE_PPM * .012));
+  const line = Math.max(1, Math.round(ppm * .012));
   roundRect(g, line / 2, line / 2, W - line, H - line, r);
   g.fillStyle = notePaper(note);
   g.fill();
@@ -215,9 +232,9 @@ export function drawNote(g: CanvasRenderingContext2D, canvas: HTMLCanvasElement,
   g.stroke();
   if (opts.text === false) return;
 
-  const pad = Math.max(4, Math.round(NOTE_PPM * .14));
+  const pad = Math.max(4, Math.round(ppm * .14));
   const maxW = W - pad * 2;
-  const base = Math.max(6, note.fs * NOTE_PPM);
+  const base = Math.max(6, note.fs * ppm);
   g.save();
   roundRect(g, 0, 0, W, H, r);
   g.clip();
@@ -346,8 +363,7 @@ export class NoteLayer {
   }
 
   private canvasFor(note: PlacedNote) {
-    const w = Math.max(.2, note.w), h = Math.max(.2, note.h);
-    const cw = Math.max(8, Math.round(w * NOTE_PPM)), ch = Math.max(8, Math.round(h * NOTE_PPM));
+    const [cw, ch] = noteCanvasSize(note.w, note.h);
     const [canvas, g] = this.K.makeCanvas(cw, ch);
     return { canvas, g };
   }

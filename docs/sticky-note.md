@@ -39,19 +39,24 @@ or in an opened **full WYSIWYG editor**.
 
 ## 4. Appearance
 
-- **Base size**: default **2.0 m × 1.5 m**; **Resize** allows **1.0 – 6.0 m**, step **0.5 m**.
+- **Base size**: default **2.0 m × 1.5 m**; **Resize** allows **1.0 – 40.0 m** (as big as the largest
+  island). The card's Grow / Shrink step grows with the note (≥ 0.5 m, kept on the 0.5 m grid), so the
+  whole range takes a handful of clicks; the corner handles resize freely.
 - **Corner handles**: when a note is selected, a handle sits on each of its four projected corners.
   Dragging one resizes **width and depth independently** (they need not stay in proportion), snapping
   to the 5 cm grid (**Alt** = free), pivoting on the **opposite corner** — which stays put.
 - **Background colour**: 6 light paper colours, exported as `NOTE_COLORS` from `world.ts`; names go
   through `t()`. Light papers keep the fixed dark ink readable.
 - **Ink**: fixed dark **`#2b2b2b`** on every note — no per-note text colour.
-- **Preview text size** (`fs`): **0.1 – 0.5 m**, step **0.05 m**, default **0.2 m**.
+- **Preview text size** (`fs`): **0.1 – 2.0 m**, default **0.2 m**; the card's `A−` / `A+` step is ~25 %
+  of the current size (≥ 0.05 m). The height is in metres, so a bigger note wants a bigger number.
 - The note rests on the island surface at the note's position, with a small offset (**2 cm**) so it
   never z-fights the ground. The paper's corners are rounded and **cut out** (material
   `transparent` + `alphaTest`), so the world shows through instead of black corners.
-- The preview texture is rendered at **384 px per metre** (a 2 × 1.5 m note = 768 × 576), with text
-  drawn on whole pixels, so the writing stays crisp when you zoom in.
+- The preview texture is drawn at **384 px per metre** — the default 2 × 1.5 m note is 768 × 576 — with
+  text on whole pixels. **The budget is capped at the old biggest note (6 × 6 m = 2304 × 2304 px)**:
+  a larger note is drawn at a lower density instead of allocating more pixels (never above 2304 × 2304
+  px in total, never above **4096 px** on a side, which some GPUs refuse).
 
 ## 5. Viewing on the ground
 
@@ -81,9 +86,10 @@ or in an opened **full WYSIWYG editor**.
 One card, anchored to the selected note, holding **Buttons like every other element's card**:
 
 - **背景色 (background colour)** — cycles to the next paper colour, showing the current one as a dot.
-- **`A−` / `A+`** — preview text size.
+- **`A−` / `A+`** — preview text size (step grows with the current size).
 - **Rotate** — 90°.
-- **Shrink / Grow** — coarse base-size steps (the corner handles do this freely).
+- **Shrink / Grow** — base-size steps that grow with the note (≥ 0.5 m; the corner handles do this
+  freely).
 - **Edit** — open the WYSIWYG editor.
 - **Delete** — asks for confirmation (§8).
 
@@ -113,6 +119,10 @@ Grounded in the current structure of `packages/core`:
   and effectively unreadable. Accepted; the coloured slab still marks the note.
 - **Note content is not undoable**: text edits and delete are outside the undo stack. Mitigated only
   by the delete confirmation.
+- **A huge note is drawn at a lower texture density.** The pixel budget is fixed at the old biggest
+  note (§4), so a 40 m note is painted at ~57 px per metre: the paper and its writing are softer than
+  on a small note. Writing on it in place is unaffected — that overlay is real DOM text at screen
+  resolution. Growing a note therefore costs no extra texture memory.
 - **No collision handling**: notes can be placed and moved anywhere on the surface, including near or
   over palaces and props, since they are flat and non-blocking.
 
@@ -125,6 +135,7 @@ Grounded in the current structure of `packages/core`:
 - Single click selects and shows the menu; double-click edits in place; Edit opens Quill with
   bold/italic/underline, headings, lists and links, stored as the sanitised subset.
 - The menu changes background colour, preview size, base size, opens the editor, and deletes with a
-  confirmation.
+  confirmation. Growth is not capped in practice: 1.0 – 40.0 m, and a note grown to 40 m keeps its
+  texture at ≤ 2304 × 2304 px with a side ≤ 4096 px.
 - Ink is fixed `#2b2b2b`; UI strings go through `t()` with English in `src/i18n/en/`;
   `pnpm typecheck && pnpm test` stays green.

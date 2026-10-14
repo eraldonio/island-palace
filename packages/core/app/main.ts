@@ -1,4 +1,4 @@
-import { PalaceView, setLocale, createHomePalace, createFromTemplate, normalizePalace, normalizeWorld, createWorld, createRegion, findFreeSpot, findRegionSpot, type HostAdapter, type PalaceDoc, type PalaceWorld } from '../src';
+import { PalaceView, setLocale, createHomePalace, createFromTemplate, normalizePalace, normalizeWorld, createWorld, createRegion, findFreeSpot, findRegionSpot, NOTE_FS, type HostAdapter, type PalaceDoc, type PalaceWorld } from '../src';
 import { samplePalaces, L } from './samples';
 import './app.css';
 
@@ -93,7 +93,7 @@ function load(): { world?: PalaceWorld; docs: PalaceDoc[]; fresh?: boolean } {
         w: 3.2,
         h: 2.2,
         color: 0,
-        fs: 16,
+        fs: NOTE_FS.def,
         html: L(
           '<p><strong>欢迎来到海岛世界！</strong></p><p>在这里漫步看风景、写便签、布置岛屿，还有小动物陪伴你的每一天。</p>',
           '<p><strong>Welcome to the Island World!</strong></p><p>Stroll around, write notes, arrange your islands, and enjoy life with your companion.</p>'

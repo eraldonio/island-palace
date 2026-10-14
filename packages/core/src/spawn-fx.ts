@@ -20,6 +20,7 @@ interface MeshBounce {
   initialY: number;
   squashFactor: number;
   hopHeight: number;
+  isSpawn?: boolean;
 }
 
 interface Particle {
@@ -158,6 +159,7 @@ export class SpawnFx {
         initialScaleFactor: 0.1,
         squashFactor: 0.55,
         hopHeight: 0.45,
+        isSpawn: true,
       });
     }
 
@@ -224,6 +226,7 @@ export class SpawnFx {
         initialScaleFactor: 1.0,
         squashFactor: 0.35 * Math.min(1.8, weightScale),
         hopHeight: 0.15 * Math.min(1.5, weightScale),
+        isSpawn: false,
       });
     }
 
@@ -326,7 +329,7 @@ export class SpawnFx {
 
   private playBounce(
     targetObj: THREE.Object3D,
-    opts: { duration: number; initialScaleFactor: number; squashFactor: number; hopHeight: number }
+    opts: { duration: number; initialScaleFactor: number; squashFactor: number; hopHeight: number; isSpawn?: boolean }
   ) {
     const existing = this.bounces.find(b => b.obj === targetObj);
     if (existing) {
@@ -336,6 +339,7 @@ export class SpawnFx {
       existing.duration = opts.duration;
       existing.squashFactor = opts.squashFactor;
       existing.hopHeight = opts.hopHeight;
+      existing.isSpawn = opts.isSpawn ?? false;
     } else {
       const initialScale = targetObj.scale.clone();
       const initialY = targetObj.position.y;
@@ -347,6 +351,7 @@ export class SpawnFx {
         initialY,
         squashFactor: opts.squashFactor,
         hopHeight: opts.hopHeight,
+        isSpawn: opts.isSpawn ?? false,
       });
       if (opts.initialScaleFactor < 1.0) {
         targetObj.scale.set(
@@ -426,7 +431,7 @@ export class SpawnFx {
         // X/Z 轴体积守恒式反向形变
         const scaleXZ = 1 - osc * decay * (b.squashFactor * 0.55);
 
-        const entrance = Math.min(1, p * 4.5);
+        const entrance = b.isSpawn ? Math.min(1, p * 4.5) : 1.0;
 
         b.obj.scale.set(
           b.initialScale.x * scaleXZ * entrance,

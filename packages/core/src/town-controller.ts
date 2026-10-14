@@ -36,6 +36,11 @@ const propSpecs = (kind: PropKind | undefined): ParamSpec[] => [...(kind?.params
 const NOTE_GRID = .05;
 const snapNote = (n: number) => Math.round(n / NOTE_GRID) * NOTE_GRID;
 const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+/**
+ * 卡片按钮的一档：跟着当前值放大（并对齐到 base 的整数倍）。
+ * 便签尺寸能到 40 m、字号能到 2 m，固定档位（0.5 m / 0.05 m）那样要按几十次；四角拖动仍是自由的。
+ */
+const coarseStep = (v: number, base: number, ratio: number) => Math.max(base, Math.round(v * ratio / base) * base);
 const DEG = Math.PI / 180;
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
@@ -641,17 +646,37 @@ export class TownController {
       this.clearMultiSelect();
       this.selectNote(hit.note.noteId);
       const at = this.noteAt(hit.note.noteId);
-      if (at) this.v.companion.onSelectPropOrNote(at.note.pos[0], at.note.pos[1]);
+      if (at) {
+        this.v.companion.onSelectPropOrNote(at.note.pos[0], at.note.pos[1]);
+        const [ox, oz] = W.regionOrigin(at.region);
+        const layer = this.layerOf(at.region.id);
+        this.v.tweenCam({ target: new THREE.Vector3(at.note.pos[0] + ox, (layer?.lift ?? 0) + 0.3, at.note.pos[1] + oz), dur: 0.6 });
+      }
     } else if (hit.prop) {
       this.clearMultiSelect();
       this.selectProp(hit.prop.propId);
       const at = this.propAt(hit.prop.propId);
-      if (at) this.v.companion.onSelectPropOrNote(at.prop.pos[0], at.prop.pos[1]);
+      if (at) {
+        this.v.companion.onSelectPropOrNote(at.prop.pos[0], at.prop.pos[1]);
+        const [ox, oz] = W.regionOrigin(at.region);
+        const layer = this.layerOf(at.region.id);
+        this.v.tweenCam({ target: new THREE.Vector3(at.prop.pos[0] + ox, (layer?.lift ?? 0) + 0.3, at.prop.pos[1] + oz), dur: 0.6 });
+      }
     } else {
       this.clearMultiSelect();
       this.selectNote(null);
       this.selectProp(null);
-      this.select(this.pickPalace(e));
+      const palId = this.pickPalace(e);
+      this.select(palId);
+      if (palId) {
+        const s = this.town.shells.get(palId);
+        if (s) {
+          const layer = this.layerOf(s.regionId);
+          const [ox, oz] = layer ? W.regionOrigin(layer.region) : [0, 0];
+          const [x0, z0, x1, z1] = s.lot;
+          this.v.tweenCam({ target: new THREE.Vector3((x0 + x1) / 2 + ox, (layer?.lift ?? 0) + 0.3, (z0 + z1) / 2 + oz), dur: 0.6 });
+        }
+      }
     }
   }
 
@@ -759,13 +784,13 @@ export class TownController {
       <div class="kp-room">${t('岛屿')} · ${t('便签')}</div>
       <div class="kp-row">
         <button data-act="noteColor" title="${t('换一种纸色')}"><i class="kp-dot" style="background:${notePaper(n)}"></i>${t('背景色')}</button>
-        <button data-act="noteSize" data-d="-1" title="${t('预览字号小一点')}">A−</button>
-        <button data-act="noteSize" data-d="1" title="${t('预览字号大一点')}">A+</button>
+        <button data-act="noteSize" data-d="-1" title="${t('预览字号小一点（{step} m 一档）', { step: coarseStep(n.fs, W.NOTE_FS.step, .25) })}">A−</button>
+        <button data-act="noteSize" data-d="1" title="${t('预览字号大一点（{step} m 一档）', { step: coarseStep(n.fs, W.NOTE_FS.step, .25) })}">A+</button>
         <button data-act="noteRotate" title="${t('旋转 90°（R）')}">${rich(ICONS.rotr)}</button>
       </div>
       <div class="kp-row">
-        <button data-act="noteResize" data-d="-1" title="${t('缩小便签（{step} m 一档）', { step: W.NOTE_SIZE.step })}">${t('缩小')}</button>
-        <button data-act="noteResize" data-d="1" title="${t('放大便签（{step} m 一档）', { step: W.NOTE_SIZE.step })}">${t('放大')}</button>
+        <button data-act="noteResize" data-d="-1" title="${t('缩小便签（{step} m 一档）', { step: coarseStep(n.w, W.NOTE_SIZE.step, .2) })}">${t('缩小')}</button>
+        <button data-act="noteResize" data-d="1" title="${t('放大便签（{step} m 一档）', { step: coarseStep(n.w, W.NOTE_SIZE.step, .2) })}">${t('放大')}</button>
         <button class="kp-primary kp-grow" data-act="noteEdit" title="${t('打开富文本编辑器')}">${t('编辑')}</button>
         <button class="kp-danger" data-act="noteDelete" title="${t('删除这张便签')}">${t('删除')}</button>
       </div>
@@ -2552,8 +2577,9 @@ export class TownController {
       }
       const holder = this.town.noteHolder(d.regionId, d.noteId);
       if (holder) {
-        const rawTarget = new THREE.Vector3(ng[0] + d.offset[0], holder.position.y, ng[1] + d.offset[1]);
-        this.v.spawnFx.updateDrag(holder, holder.position, rawTarget, (note.rot || 0) * DEG, 0.08);
+        const snappedTarget = new THREE.Vector3(note.pos[0], GRASS_Y + NOTE_LIFT, note.pos[1]);
+        const rawTarget = new THREE.Vector3(ng[0] + d.offset[0], GRASS_Y + NOTE_LIFT, ng[1] + d.offset[1]);
+        this.v.spawnFx.updateDrag(holder, snappedTarget, rawTarget, (note.rot || 0) * DEG, 0.08);
       }
       return true;
     }
@@ -2574,8 +2600,10 @@ export class TownController {
       }
       const propObj = this.town.propObj(d.regionId, d.propId);
       if (propObj) {
-        const rawTarget = new THREE.Vector3(pg[0] + d.offset[0], propObj.position.y, pg[1] + d.offset[1]);
-        this.v.spawnFx.updateDrag(propObj, propObj.position, rawTarget, prop.rot || 0, 0.12);
+        const targetY = this.town.propPoseY(d.regionId, d.propId);
+        const snappedTarget = new THREE.Vector3(prop.pos[0], targetY, prop.pos[1]);
+        const rawTarget = new THREE.Vector3(pg[0] + d.offset[0], targetY, pg[1] + d.offset[1]);
+        this.v.spawnFx.updateDrag(propObj, snappedTarget, rawTarget, prop.rot || 0, 0.12);
       }
       return true;
     }
@@ -2596,8 +2624,10 @@ export class TownController {
           if (!this.propFits(region, layer, prop)) allValid = false;
           const propObj = this.town.propObj(d.regionId, pid);
           if (propObj) {
-            const rawTarget = new THREE.Vector3(g[0] + offset[0], propObj.position.y, g[1] + offset[1]);
-            this.v.spawnFx.updateDrag(propObj, propObj.position, rawTarget, prop.rot || 0, 0.12);
+            const targetY = this.town.propPoseY(d.regionId, pid);
+            const snappedTarget = new THREE.Vector3(prop.pos[0], targetY, prop.pos[1]);
+            const rawTarget = new THREE.Vector3(g[0] + offset[0], targetY, g[1] + offset[1]);
+            this.v.spawnFx.updateDrag(propObj, snappedTarget, rawTarget, prop.rot || 0, 0.12);
           }
         }
       }
@@ -2610,8 +2640,9 @@ export class TownController {
           if (!layer.onLand(next[0], next[1], 1.2)) allValid = false;
           const holder = this.town.noteHolder(d.regionId, nid);
           if (holder) {
-            const rawTarget = new THREE.Vector3(g[0] + offset[0], holder.position.y, g[1] + offset[1]);
-            this.v.spawnFx.updateDrag(holder, holder.position, rawTarget, (note.rot || 0) * DEG, 0.08);
+            const snappedTarget = new THREE.Vector3(note.pos[0], GRASS_Y + NOTE_LIFT, note.pos[1]);
+            const rawTarget = new THREE.Vector3(g[0] + offset[0], GRASS_Y + NOTE_LIFT, g[1] + offset[1]);
+            this.v.spawnFx.updateDrag(holder, snappedTarget, rawTarget, (note.rot || 0) * DEG, 0.08);
           }
         }
       }
@@ -2631,8 +2662,9 @@ export class TownController {
       this.updateMarker(d.valid);
       this.v.invalidate();
     }
-    const rawTarget = new THREE.Vector3(g[0] + d.offset[0], s.group.position.y, g[1] + d.offset[1]);
-    this.v.spawnFx.updateDrag(s.group, s.group.position, rawTarget, s.placed.rot * DEG, 0.15);
+    const snappedTarget = new THREE.Vector3(s.placed.pos[0], 0, s.placed.pos[1]);
+    const rawTarget = new THREE.Vector3(g[0] + d.offset[0], 0, g[1] + d.offset[1]);
+    this.v.spawnFx.updateDrag(s.group, snappedTarget, rawTarget, s.placed.rot * DEG, 0.15);
     return true;
   }
 
@@ -2956,13 +2988,16 @@ export class TownController {
       }
       case 'noteSize': {
         const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
-        if (at) this.editNote({ fs: clampNum(at.note.fs + Number(el.dataset.d) * W.NOTE_FS.step, W.NOTE_FS.min, W.NOTE_FS.max) });
+        if (at) {
+          const d = Number(el.dataset.d) * coarseStep(at.note.fs, W.NOTE_FS.step, .25);
+          this.editNote({ fs: clampNum(at.note.fs + d, W.NOTE_FS.min, W.NOTE_FS.max) });
+        }
         return true;
       }
       case 'noteResize': {
         const at = this.selectedNote ? this.noteAt(this.selectedNote) : null;
         if (at) {
-          const d = Number(el.dataset.d) * W.NOTE_SIZE.step;
+          const d = Number(el.dataset.d) * coarseStep(at.note.w, W.NOTE_SIZE.step, .2);
           this.editNote({
             w: clampNum(at.note.w + d, W.NOTE_SIZE.min, W.NOTE_SIZE.max),
             h: clampNum(at.note.h + d, W.NOTE_SIZE.min, W.NOTE_SIZE.max),

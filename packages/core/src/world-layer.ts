@@ -496,6 +496,12 @@ export class RegionLayer {
     return e?.obj ?? null;
   }
 
+  /** 获取摆设当前的基准高度（baseY + lift） */
+  propPoseY(propId: string): number {
+    const e = this.propBoxes.get(propId);
+    return e ? e.baseY + e.lift : GRASS_Y;
+  }
+
   /** 编辑中的便签只显示纸面（文字由 DOM 画在便签上，那样才清晰） */
   paperNote(noteId: string, on: boolean) {
     this.noteLayer.paper(noteId, on);
@@ -908,6 +914,11 @@ export class WorldLayer {
   /** 获取脱离批次的摆设 3D 独立对象（用于动画特效） */
   propObj(regionId: string, propId: string): THREE.Object3D | null {
     return this.regions.get(regionId)?.propObj(propId) ?? null;
+  }
+
+  /** 获取摆设的放置基准 Y 高度（局部空间） */
+  propPoseY(regionId: string, propId: string): number {
+    return this.regions.get(regionId)?.propPoseY(propId) ?? GRASS_Y;
   }
 
   // =====================================================================

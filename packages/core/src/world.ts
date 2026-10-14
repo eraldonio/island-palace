@@ -3,7 +3,7 @@ import { gid, type PalaceDoc, type Rect, type Vec2 } from './schema';
 import { t } from './i18n';
 import { NOTE_COLORS, sanitizeNoteHtml } from './notes';
 
-export { NOTE_COLORS, NOTE_INK, NOTE_LIFT, NOTE_PPM, drawNote, noteCorners, noteLocal, notePaper, noteToWorld, parseNote, sanitizeNoteHtml } from './notes';
+export { NOTE_COLORS, NOTE_INK, NOTE_LIFT, NOTE_PPM, drawNote, noteCanvasSize, noteCorners, noteLocal, notePaper, noteToWorld, parseNote, sanitizeNoteHtml } from './notes';
 
 /* =====================================================================
  * 世界数据：宫殿摆在哪里。
@@ -110,10 +110,14 @@ export interface PalaceWorld {
 /** 宫殿主题色（名牌圆点、屋顶） */
 export const PALACE_COLORS = ['#c46d4d', '#3e4d66', '#5f7a6c', '#b8563c', '#6d4a3a', '#8a6aa0', '#c9973f', '#4f7f8a', '#9a5b6e', '#6b7a3e'];
 
-/** 便签：新便签的默认尺寸（米）、尺寸可调范围、地面预览的字号范围（米）；纸色见 notes.ts */
+/**
+ * 便签：新便签的默认尺寸（米）、尺寸可调范围、地面预览的字号范围（米）；纸色见 notes.ts。
+ * 上限很大（40 m ≈ 最大的一座岛）：便签可以当成墙上的大纸；贴图按 notes.ts 的像素预算降分辨率，
+ * 所以尺寸涨上去显存不涨。字号是「米」，便签越大就越要调大字号，才能在地上看清。
+ */
 export const NOTE_NEW = { w: 2, h: 1.5 };
-export const NOTE_SIZE = { min: 1, max: 6, step: .5 };
-export const NOTE_FS = { min: .1, max: .5, step: .05, def: .2 };
+export const NOTE_SIZE = { min: 1, max: 40, step: .5 };
+export const NOTE_FS = { min: .1, max: 2, step: .05, def: .2 };
 
 /** 小镇中心广场的半径（宫殿不能压到广场） */
 export const PLAZA_R = 6;
