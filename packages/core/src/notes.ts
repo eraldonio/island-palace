@@ -418,6 +418,11 @@ export class NoteLayer {
     return e ? e.box.clone().applyMatrix4(groupMatrix) : null;
   }
 
+  /** 便签的 3D 挂载节点（用于动画特效） */
+  holderOf(id: string): THREE.Group | null {
+    return this.entries.get(id)?.holder ?? null;
+  }
+
   clear() {
     for (const e of this.entries.values()) e.holder.removeFromParent();
     this.entries.clear();

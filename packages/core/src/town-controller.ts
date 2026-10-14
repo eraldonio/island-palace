@@ -1148,6 +1148,10 @@ export class TownController {
     this.v.worldChanged();
     // 回到「布置」，新摆设保持选中（卡片会显示出来，可以接着改参数）
     this.setEditing(true);
+    const propObj = this.town.propObj(p.regionId, p.prop.id);
+    const box = this.town.propBox(p.regionId, p.prop.id);
+    const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+    this.v.spawnFx.trigger(propObj, center);
   }
 
   /** 只是把预览撤掉；要不要回到「布置」由调用方决定（见 startPropPlacing 的说明） */
@@ -1195,6 +1199,10 @@ export class TownController {
     const copy = W.addProp(at.region, at.prop.kind, [at.prop.pos[0] + 1.2, at.prop.pos[1] + 1.2], at.prop.rot, at.prop.params);
     this.town.rebuildProps(at.region.id);
     this.selectProp(copy.id);
+    const propObj = this.town.propObj(at.region.id, copy.id);
+    const box = this.town.propBox(at.region.id, copy.id);
+    const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+    this.v.spawnFx.trigger(propObj, center);
     this.pushUndo(before);
     this.v.worldChanged();
     this.v.invalidate();
@@ -1285,6 +1293,26 @@ export class TownController {
     }
     this.pushUndo(before);
     this.v.worldChanged();
+
+    for (const pid of newProps) {
+      const at = this.propAt(pid);
+      if (at) {
+        const propObj = this.town.propObj(at.region.id, pid);
+        const box = this.town.propBox(at.region.id, pid);
+        const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+        this.v.spawnFx.trigger(propObj, center);
+      }
+    }
+    for (const nid of newNotes) {
+      const at = this.noteAt(nid);
+      if (at) {
+        const holder = this.town.noteHolder(at.region.id, nid);
+        const box = this.town.noteBox(at.region.id, nid);
+        const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+        this.v.spawnFx.trigger(holder, center);
+      }
+    }
+
     this.updateMarker();
     this.renderCard();
     this.v.invalidate();
@@ -1556,6 +1584,10 @@ export class TownController {
     // 回到「布置」，新便签保持选中（卡片会显示出来，可以接着改）
     this.setEditing(true);
     this.town.rebuildNotes(p.regionId);
+    const holder = this.town.noteHolder(p.regionId, p.note.id);
+    const box = this.town.noteBox(p.regionId, p.note.id);
+    const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
+    this.v.spawnFx.trigger(holder, center);
     this.v.invalidate();
   }
 

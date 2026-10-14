@@ -478,6 +478,17 @@ export class RegionLayer {
     return this.noteLayer.worldBox(noteId, this.group.matrixWorld);
   }
 
+  /** 获取便签的 3D 对象（用于动画特效） */
+  noteHolder(noteId: string): THREE.Group | null {
+    return this.noteLayer.holderOf(noteId);
+  }
+
+  /** 获取摆设脱离批次的独立 3D 对象（用于动画特效） */
+  propObj(propId: string): THREE.Object3D | null {
+    const e = this.propBoxes.get(propId);
+    return e?.obj ?? null;
+  }
+
   /** 编辑中的便签只显示纸面（文字由 DOM 画在便签上，那样才清晰） */
   paperNote(noteId: string, on: boolean) {
     this.noteLayer.paper(noteId, on);
@@ -887,6 +898,11 @@ export class WorldLayer {
     return this.regions.get(regionId)?.boxOf(propId) ?? null;
   }
 
+  /** 获取脱离批次的摆设 3D 独立对象（用于动画特效） */
+  propObj(regionId: string, propId: string): THREE.Object3D | null {
+    return this.regions.get(regionId)?.propObj(propId) ?? null;
+  }
+
   // =====================================================================
   // 岛上的便签
   // =====================================================================
@@ -927,6 +943,11 @@ export class WorldLayer {
   /** 便签的世界包围盒（选中标记用） */
   noteBox(regionId: string, noteId: string): THREE.Box3 | null {
     return this.regions.get(regionId)?.noteBox(noteId) ?? null;
+  }
+
+  /** 获取便签的 3D 对象（用于动画特效） */
+  noteHolder(regionId: string, noteId: string): THREE.Group | null {
+    return this.regions.get(regionId)?.noteHolder(noteId) ?? null;
   }
 
   /** 编辑中的便签只显示纸面（文字由 DOM 画） */

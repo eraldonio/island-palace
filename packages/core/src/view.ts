@@ -24,6 +24,7 @@ import { ICONS } from './icons';
 import { html, rich } from './dom';
 import { BEND, bendScene, bendPoint, bendNormal, setBend } from './bend';
 import { PlanetFx } from './planet';
+import { SpawnFx } from './spawn-fx';
 
 /* =====================================================================
  * PalaceView：把一个「岛屿世界」渲染进任意容器（网页、嵌入式视图…）
@@ -159,6 +160,7 @@ export class PalaceView {
   private planetFocus = new THREE.Vector3(NaN, 0, NaN);
   private planetCam = new THREE.Vector3();
   private fx: PlanetFx;
+  /** @internal */ spawnFx: SpawnFx;
   /** @internal */ mode: Mode = 'iso';
   private wallMode = 0;
   /** @internal */ night = 0;
@@ -299,6 +301,7 @@ export class PalaceView {
     this.scene.add(this.town.group);
     this.town.build(this.world, this.docs);
     const settled = this.settleRegions();
+    this.spawnFx = new SpawnFx(this.scene);
     this.editor = new Editor(this);
     this.shelfEd = new ShelfEditor(this);
     this.townCtl = new TownController(this);
@@ -393,6 +396,7 @@ export class PalaceView {
     this.built = null; this.peek = null;
     this.town.dispose();
     this.fx.dispose();
+    this.spawnFx.dispose();
     BEND.k.value = 0;
     this.composer?.dispose();
     this.gtao?.dispose();
@@ -1692,6 +1696,7 @@ export class PalaceView {
     }
     if (this.town.update(dt)) this.invalidate();
     if (this.companion.update(dt)) this.invalidate(1);
+    if (this.spawnFx.update(dt)) this.invalidate(1);
     this.updateWalls(dt);
     if (this.night !== this.nightTarget) {
       this.night = THREE.MathUtils.clamp(this.night + Math.sign(this.nightTarget - this.night) * dt * 1.4, 0, 1);

@@ -316,7 +316,10 @@ export class Editor {
     for (const c of copies) { const o = spawnItem(this.v.built, c, this.v.catalog); if (c === copy) obj = o; }
     this.v.applyNightToNew();
     this.commit(before);
-    if (obj) this.v.select(obj);
+    if (obj) {
+      this.v.select(obj);
+      this.v.spawnFx.trigger(obj);
+    }
   }
 
   deleteSelected() {
@@ -719,7 +722,9 @@ export class Editor {
       this.v.applyNightToNew();
     }
     this.commit(p.before);
-    this.v.select(this.v.built.itemObjects.get(p.item.id) || p.obj);
+    const placedObj = this.v.built.itemObjects.get(p.item.id) || p.obj;
+    this.v.select(placedObj);
+    this.v.spawnFx.trigger(placedObj);
     if (keepGoing) this.startPlacing(p.preset);
   }
 
