@@ -8,14 +8,14 @@ function docsMap(...docs: PalaceDoc[]) {
 }
 
 describe('世界：摆放', () => {
-  it('syncWorld 给新宫殿找空地，互不重叠', () => {
-    const a = createFromTemplate('cottage', 'A'), b = createFromTemplate('twoRooms', 'B'), c = createFromTemplate('gallery', 'C');
-    const docs = docsMap(a, b, c);
+  it('syncWorld 清理旧宫殿，世界保持没有宫殿结构', () => {
+    const a = createFromTemplate('cottage', 'A');
+    const docs = docsMap(a);
     const world = W.createWorld();
+    world.regions[0].palaces.push({ palaceId: a.id, pos: [0, 0], rot: 0 });
     expect(W.syncWorld(world, docs)).toBe(true);
     const region = W.mainRegion(world);
-    expect(region.palaces.map(p => p.palaceId).sort()).toEqual([a.id, b.id, c.id].sort());
-    for (const p of region.palaces) expect(W.canPlace(region, docs, p, docs.get(p.palaceId))).toBe(true);
+    expect(region.palaces).toEqual([]);
     // 再同步一次没有改动
     expect(W.syncWorld(world, docs)).toBe(false);
   });

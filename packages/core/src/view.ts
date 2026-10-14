@@ -1181,7 +1181,7 @@ export class PalaceView {
   }
 
   /** 画布上的鼠标样式（样式表里按 data-kp-cursor 设置） @internal */
-  setCursor(c: '' | 'pointer' | 'grab' | 'grabbing') {
+  setCursor(c: '' | 'pointer' | 'grab' | 'grabbing' | 'crosshair') {
     this.renderer.domElement.dataset.kpCursor = c;
   }
 

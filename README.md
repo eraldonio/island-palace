@@ -11,7 +11,6 @@ Island Palace is a fork of [KMind Palace](https://github.com/suka233/kmind-palac
 - 🏝 **Build a world** — an island town → archipelago → tiny planet; four scene themes (island, forest, snow peaks, sky islands) and a day/night toggle.
 - 🏗 **Build mode** — add rooms, walls, doors and windows, then furnish them from the catalog: move, rotate and fine-tune every piece (size, colors, mount points).
 - 📝 **Sticky notes** — drop a note flat on the island ground; write on it in place, or open it in a rich-text editor; pick its paper colour and preview text size from its own menu.
-- 📷 **Recognize furniture from a photo** — hand it a photo of a piece of furniture and a vision model turns it into an object in the catalog's style. Optional: point it at your own OpenAI-compatible endpoint.
 - 📦 **Bring your own models and photos** — import `.glb` models and use your own images as media.
 - 🦉 **Your pet** — five species with colors and accessories; it lives on your island and follows you.
 - 🔒 **Everything stays in your browser** — palaces, the world and media are saved locally; no account, no server, no telemetry.
@@ -41,9 +40,7 @@ AGENTS.md          working notes for contributors/agents: commands, traps, how t
 
 ## Network use
 
-- **Photo → furniture recognition** is optional and sends the photo only to the OpenAI-compatible endpoint you configure. Nothing is configured by default.
-- Because the page calls that endpoint directly from the browser, it has to allow cross-origin requests: OpenAI's API does; a local Ollama needs `OLLAMA_ORIGINS` set to this page's origin.
-- Nothing else talks to a server: no telemetry, no analytics. Your palaces never leave your browser.
+Island Palace never talks to a server: no telemetry, no analytics, no API calls. Your palaces and media never leave your browser.
 
 ## License
 

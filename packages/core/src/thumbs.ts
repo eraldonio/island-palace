@@ -28,6 +28,11 @@ export class ThumbnailRenderer {
   private raf = 0;
   private disposed = false;
   private pixels = new Uint8Array(SIZE * SIZE * 4);
+  private bigCanvas: HTMLCanvasElement | null = null;
+  private bigCtx: CanvasRenderingContext2D | null = null;
+  private bigImg: ImageData | null = null;
+  private outCanvas: HTMLCanvasElement | null = null;
+  private outCtx: CanvasRenderingContext2D | null = null;
   /** 摆设缩略图用的临时上下文（第一次要摆设缩略图时才建） */
   private pctx: ThemeCtx | null = null;
 
@@ -39,6 +44,18 @@ export class ThumbnailRenderer {
     const key = new THREE.DirectionalLight('#fff3e0', 1.9);
     key.position.set(3, 6, 5);
     this.scene.add(key);
+
+    if (typeof document !== 'undefined') {
+      this.bigCanvas = document.createElement('canvas');
+      this.bigCanvas.width = this.bigCanvas.height = SIZE;
+      this.bigCtx = this.bigCanvas.getContext('2d');
+      if (this.bigCtx) this.bigImg = this.bigCtx.createImageData(SIZE, SIZE);
+
+      this.outCanvas = document.createElement('canvas');
+      this.outCanvas.width = this.outCanvas.height = OUT;
+      this.outCtx = this.outCanvas.getContext('2d');
+      if (this.outCtx) this.outCtx.imageSmoothingQuality = 'high';
+    }
   }
 
   get(preset: Preset): Promise<string> {
@@ -158,19 +175,13 @@ export class ThumbnailRenderer {
     obj.traverse((o: any) => { if (o.isMesh && !o.geometry.userData.shared) o.geometry.dispose(); });
 
     // 翻转 Y 并 2 倍降采样（抗锯齿）
-    const big = document.createElement('canvas');
-    big.width = big.height = SIZE;
-    const g = big.getContext('2d');
-    const img = g.createImageData(SIZE, SIZE);
+    if (!this.bigCanvas || !this.bigCtx || !this.bigImg || !this.outCanvas || !this.outCtx) return '';
     const row = SIZE * 4;
-    for (let y = 0; y < SIZE; y++) img.data.set(this.pixels.subarray((SIZE - 1 - y) * row, (SIZE - y) * row), y * row);
-    g.putImageData(img, 0, 0);
-    const out = document.createElement('canvas');
-    out.width = out.height = OUT;
-    const og = out.getContext('2d');
-    og.imageSmoothingQuality = 'high';
-    og.drawImage(big, 0, 0, OUT, OUT);
-    return out.toDataURL('image/png');
+    for (let y = 0; y < SIZE; y++) this.bigImg.data.set(this.pixels.subarray((SIZE - 1 - y) * row, (SIZE - y) * row), y * row);
+    this.bigCtx.putImageData(this.bigImg, 0, 0);
+    this.outCtx.clearRect(0, 0, OUT, OUT);
+    this.outCtx.drawImage(this.bigCanvas, 0, 0, OUT, OUT);
+    return this.outCanvas.toDataURL('image/png');
   }
 
   dispose() {
@@ -178,6 +189,11 @@ export class ThumbnailRenderer {
     window.cancelAnimationFrame(this.raf);
     this.queue = [];
     this.rt.dispose();
+    this.bigCanvas = null;
+    this.bigCtx = null;
+    this.bigImg = null;
+    this.outCanvas = null;
+    this.outCtx = null;
     // 摆设缩略图专用的那套材质是自己建的，跟着一起还掉
     for (const m of Object.values(this.pctx?.mats || {})) {
       (m as THREE.MeshStandardMaterial).map?.dispose();

@@ -25,7 +25,7 @@ export { NOTE_COLORS, NOTE_INK, NOTE_LIFT, NOTE_PPM, drawNote, noteCorners, note
 
 /** 磁盘上的格式标识：沿用上游的字符串，这样旧版写出的世界文件仍然认得出来（同 PALACE_FORMAT） */
 export const WORLD_FORMAT = 'kmind-palace-world';
-export const WORLD_VERSION = 5;
+export const WORLD_VERSION = 6;
 /** 读取本版本写出的世界数据至少需要的版本（规则同 PALACE_COMPAT） */
 export const WORLD_COMPAT = 1;
 
@@ -90,6 +90,8 @@ export interface WorldRegion {
   props?: PlacedProp[];
   /** 岛上的便签（见 notes.ts）：平铺在地面上，和摆设一样是可单独拾取 / 移动的元素 */
   notes?: PlacedNote[];
+  /** 地形捏形 / 自定义轮廓偏移（16个径向角度的半径偏移，米） */
+  shapeOffsets?: number[];
 }
 
 export interface PalaceWorld {
@@ -168,6 +170,12 @@ const MIGRATIONS: Record<number, (w: PalaceWorld) => void> = {
     const old = w as PalaceWorld & LegacyWorldFields;
     delete old.journeys;
     delete old.pao;
+  },
+  5(w) {
+    // 彻底移除房屋与宫殿：清空所有岛上的旧宫殿摆放
+    for (const r of w.regions) {
+      r.palaces = [];
+    }
   },
 };
 
@@ -249,6 +257,9 @@ export function normalizeWorld(raw: unknown): PalaceWorld {
     if (props) region.props = props;
     else delete region.props;
     region.notes = normNotes(r.notes);
+    if (Array.isArray(r.shapeOffsets)) {
+      region.shapeOffsets = r.shapeOffsets.map(n => Math.round(Math.max(-30, Math.min(60, Number(n) || 0)) * 10) / 10);
+    } else delete region.shapeOffsets;
     return region;
   });
   if (!regions.length) regions.push(createRegion());
@@ -448,17 +459,12 @@ export function findPlacement(world: PalaceWorld, palaceId: string) {
  */
 export function syncWorld(world: PalaceWorld, docs: Map<string, PalaceDoc>): boolean {
   let changed = false;
-  const placed = new Set<string>();
+  // 彻底移除房屋：世界不再自动添加宫殿外壳
   for (const region of world.regions) {
-    const keep = region.palaces.filter(p => !placed.has(p.palaceId));
-    if (keep.length !== region.palaces.length) { region.palaces = keep; changed = true; }
-    keep.forEach(p => placed.add(p.palaceId));
-  }
-  const region = mainRegion(world);
-  const fresh = [...docs.values()].filter(d => !placed.has(d.id)).sort((a, b) => a.createdAt - b.createdAt);
-  for (const doc of fresh) {
-    region.palaces.push({ palaceId: doc.id, pos: findFreeSpot(region, docs, doc), rot: 0 });
-    changed = true;
+    if (region.palaces.length) {
+      region.palaces = [];
+      changed = true;
+    }
   }
   if (changed) world.updatedAt = Date.now();
   return changed;

@@ -185,7 +185,7 @@ export class RegionLayer {
     }
     const ext = this.extent = regionExtent(region, docs);
     this.center = rectCenter(ext);
-    const R = this.radial = islandRadial(ext, lots, region.seed, this.center, this.theme.margin ?? 8, this.theme.minR ?? 22);
+    const R = this.radial = islandRadial(ext, lots, region.seed, this.center, this.theme.margin ?? 8, this.theme.minR ?? 22, region.shapeOffsets);
     let maxR = 0;
     for (let i = 0; i < 64; i++) maxR = Math.max(maxR, R(i / 64 * Math.PI * 2));
     this.maxR = maxR;
@@ -1061,17 +1061,26 @@ function pointLights(root: THREE.Object3D): THREE.PointLight[] {
  * 岛的轮廓：以所有地块（和广场）角点的「支撑函数」为基础外扩，再叠加低频噪声。
  * 宫殿越多、摆得越开，岛就越大；同一个种子的海岸线形状稳定。
  */
-function islandRadial(ext: Rect, lots: Rect[], seed: number, c: Vec2, margin: number, minR: number) {
+function islandRadial(ext: Rect, lots: Rect[], seed: number, c: Vec2, margin: number, minR: number, shapeOffsets?: number[]) {
   const N = 180;
   const corners: Vec2[] = [];
   for (const r of [...lots, ext]) corners.push([r[0], r[1]], [r[2], r[1]], [r[0], r[3]], [r[2], r[3]]);
   const circle = PLAZA_R + 2;
   const base = new Float32Array(N);
+  const numOffsets = shapeOffsets?.length || 0;
   for (let i = 0; i < N; i++) {
     const a = i / N * Math.PI * 2, ux = Math.cos(a), uz = Math.sin(a);
     let h = -c[0] * ux - c[1] * uz + circle;
     for (const [x, z] of corners) h = Math.max(h, (x - c[0]) * ux + (z - c[1]) * uz);
-    base[i] = Math.max(h + margin, minR);
+    let off = 0;
+    if (numOffsets > 0 && shapeOffsets) {
+      const idxF = (i / N) * numOffsets;
+      const i0 = Math.floor(idxF) % numOffsets;
+      const i1 = (i0 + 1) % numOffsets;
+      const t = idxF - Math.floor(idxF);
+      off = (shapeOffsets[i0] ?? 0) * (1 - t) + (shapeOffsets[i1] ?? 0) * t;
+    }
+    base[i] = Math.max(h + margin + off, circle, 6);
   }
   // 平滑支撑函数的折角
   const smooth = new Float32Array(N);

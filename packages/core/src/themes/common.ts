@@ -245,16 +245,10 @@ export function commonMats(K: Kit): Mats {
   };
 }
 
-/** 广场地面：铺装圆盘 + 路缘 + 内圈（生几何：铺装不随摆设动） */
-export function plazaBase(ctx: ThemeCtx) {
-  const { K, mats, raw } = ctx;
-  const c = (r: number, h: number, y: number, mat: THREE.Material, seg = 72) => {
-    const m = K.mesh(new THREE.CylinderGeometry(r, r, h, seg), mat, false);
-    m.position.y = y + h / 2; raw.add(m); return m;
-  };
-  c(PLAZA_R + .25, .04, GRASS_Y, mats.curb);
-  c(PLAZA_R, .06, GRASS_Y + .01, mats.paver);
-  c(2.4, .02, GRASS_Y + .07, mats.paverDark, 48);
+/** 广场地面铺装：已升级为纯净自然地面，不再硬编码不可移动的预渲染铺装圆盘 */
+export function plazaBase(_ctx: ThemeCtx) {
+  // 原硬编码的 plazaBase 铺装圆盘已移除，使中心成为纯净自然地面；
+  // 用户可随时在岛中心自由摆放或移动喷泉、长椅、绿植等模型。
 }
 
 /** 广场四周的长椅和花槽（只决定位置，几何见 props.ts 的 bench / planter） */

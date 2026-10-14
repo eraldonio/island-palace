@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { PALACE_FORMAT, PALACE_VERSION } from '../src/schema';
 import { WORLD_FORMAT } from '../src/world';
 import { PalaceStore, type StorageAdapter } from '../src/store';
-import { createOpenAiAdapter, OPENAI_DEFAULTS, type HttpPost } from '../src/openai';
 
 // 存储的防抖用 window.setTimeout；Node 里没有 window
 (globalThis as { window?: unknown }).window ??= globalThis;
@@ -60,43 +59,5 @@ describe('宫殿存储', () => {
     await store.flush();
     expect(st.files['world.json']).toEqual(worldFuture);
     expect(st.files['palaces/p-new.json']).toEqual(future);
-  });
-});
-
-describe('OpenAI 兼容客户端', () => {
-  const cfg = { ...OPENAI_DEFAULTS, textBase: 'https://api.example.com/v1/', textKey: 'sk-1', textModel: 'gpt-4o-mini', visionModel: 'vl' };
-  const okChat: HttpPost = async () => ({ status: 200, text: JSON.stringify({ choices: [{ message: { content: '故事' } }] }) });
-
-  it('文字走文字模型，识图走识图模型', async () => {
-    const calls: { url: string; headers: Record<string, string>; body: unknown }[] = [];
-    const post: HttpPost = async (url, headers, body) => {
-      calls.push({ url, headers, body });
-      return { status: 200, text: JSON.stringify({ choices: [{ message: { content: '故事' } }] }) };
-    };
-    const ai = createOpenAiAdapter(() => cfg, post);
-    expect(await ai.chat([{ role: 'user', content: 'hi' }])).toBe('故事');
-    expect(calls[0]).toMatchObject({ url: 'https://api.example.com/v1/chat/completions', headers: { Authorization: 'Bearer sk-1' }, body: { model: 'gpt-4o-mini' } });
-    // 消息里带图片：发给识图模型
-    await ai.chat([{ role: 'user', content: [{ type: 'text', text: 'x' }] }]);
-    expect(calls[1]).toMatchObject({ body: { model: 'vl' } });
-  });
-
-  it('错误信息带上状态码和模型返回的原因', async () => {
-    const fail: HttpPost = async () => ({ status: 401, text: JSON.stringify({ error: { message: 'invalid key' } }) });
-    const ai = createOpenAiAdapter(() => cfg, fail);
-    await expect(ai.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow('401 invalid key');
-  });
-
-  it('没有 Key 且不是本机地址时报错；本机地址不需要 Key', async () => {
-    const noKey = createOpenAiAdapter(() => ({ ...cfg, textKey: '' }), okChat);
-    await expect(noKey.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/API Key/);
-    const local = createOpenAiAdapter(() => ({ ...cfg, textKey: '', textBase: 'http://127.0.0.1:11434/v1' }), okChat);
-    expect(await local.chat([{ role: 'user', content: 'hi' }])).toBe('故事');
-  });
-
-  it('推理模型的  thinking 被去掉', async () => {
-    const post: HttpPost = async () => ({ status: 200, text: JSON.stringify({ choices: [{ message: { content: ' thinking嗯</think>故事' } }] }) });
-    const ai = createOpenAiAdapter(() => cfg, post);
-    expect(await ai.chat([{ role: 'user', content: 'hi' }])).toBe('故事');
   });
 });

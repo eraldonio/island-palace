@@ -6,25 +6,26 @@ import { SPECIES, ACCESSORIES, cleanLook, seededLook, type Look } from './look';
 import { WalkGrid, type P2 } from './path';
 import { ownBox } from './build';
 import { frontDoor, PET_NAME } from './world';
+import { GRASS_Y } from './themes/common';
 import { escapeHtml } from './icons';
 import { html, rich } from './dom';
 import { t } from './i18n';
 
 /* =====================================================================
- * 小管家：住在宫殿里的小动物。
- *   进门时在门口迎接；平时在家具之间溜达、东张西望；
- *   选中一件东西时跑过去站在旁边；
- *   走进去（第一人称）时跟在身后。点它会挥手，打开换装面板（物种、颜色、配饰、名字）。
- * 外观存在世界数据里（world.pet）。
+ * 小管家：生活在岛屿世界里的小动物。
+ *   在岛上自由漫步、看风景；
+ *   点它可以互动、挥手、冒气泡，打开换装面板（物种、颜色、配饰、名字）；
+ *   镜头聚焦移动或选中物体时，会好奇地跑过来观望。
+ * 外观保存在世界数据里（world.pet）。
  * ===================================================================== */
 
-const SPEED = 1.1;
+const SPEED = 1.2;
 /** 比真实小动物大一圈，俯视时看得清、点得中 */
 const SCALE = 1.6;
 const TIPS = [
-  '双击地板可以走进去看看，像真的在房间里一样。',
-  '按 B 进入搭建模式：摆家具、改墙、加门窗。',
-  '夜里（按 N）宫殿会亮起灯，换个心情。',
+  '点我可以换衣服、换配饰，还能换物种哦～',
+  '在岛上按 B 可以布置小镇，随心摆放摆设和便签。',
+  '夜里（按 N）整个世界会亮起灯火，星光漫天。',
 ];
 
 /** 小管家的名字（显示用）：默认名字跟着界面语言走，自己起的名字原样显示 */
@@ -38,7 +39,7 @@ export class Companion {
   /** 走到之后面朝哪里：一个点，或者直接给朝向角 */
   private faceAfter: P2 | number | null = null;
   private idleFor = 0;
-  private nextIdle = 6;
+  private nextIdle = 4;
   private followCheck = 0;
   private bubble: CSS2DObject | null = null;
   private bubbleUntil = 0;
@@ -47,9 +48,10 @@ export class Companion {
   private thumbs = new Map<string, string>();
   private time = 0;
   private docId: string | null = null;
+  private activeRegionId: string | null = null;
 
   constructor(private v: PalaceView) {
-    v.root.append(html`<div class="kp-routes kp-pet-panel kp-glass kp-hidden kp-palace-only" data-ref="petPanel"></div>`);
+    v.root.append(html`<div class="kp-routes kp-pet-panel kp-glass kp-hidden" data-ref="petPanel"></div>`);
     v.ui.petPanel = v.root.querySelector('[data-ref="petPanel"]') as HTMLElement;
   }
 
@@ -62,23 +64,65 @@ export class Companion {
   // 生命周期
   // =====================================================================
 
-  /** 进了一座宫殿：在门口出现 */
-  onPalaceLoaded() {
-    const v = this.v, b = v.built, doc = v.doc;
-    // 同一座宫殿重新载入（同步、重置）：留在原地，只是重新找路
-    if (this.ch && doc && this.docId === doc.id) { this.grid = null; this.path = []; return; }
+  /** 确保在当前岛屿上出现并漫步 */
+  ensureWorldCompanion() {
+    const v = this.v;
+    if (this.hidden || v.readonly) {
+      if (this.ch) this.remove();
+      return;
+    }
+    const currentRegionId = v.region?.id;
+    if (this.ch && this.activeRegionId === currentRegionId) return;
+
     this.remove();
-    this.docId = doc?.id || null;
-    // 只读的网页查看器里没有小管家
-    if (!b || !doc || this.hidden || v.readonly) return;
+    this.activeRegionId = currentRegionId || null;
+    const layer = currentRegionId ? v.town.regions.get(currentRegionId) : undefined;
+    if (!layer) return;
+
     const ch = this.ch = new Character(this.pet.look, SCALE);
     ch.root.name = 'kp-pet';
     // 点击用的隐形球（比小动物本身好点中）
+    const hit = this.hit = new THREE.Mesh(new THREE.SphereGeometry(.32 * SCALE, 8, 6), new THREE.MeshBasicMaterial());
+    hit.position.y = .24 * SCALE;
+    hit.visible = false;
+    ch.root.add(hit);
+
+    // 对话气泡
+    const el = document.createElement('div');
+    el.className = 'kp-pet-bubble kp-hidden';
+    const bubble = this.bubble = new CSS2DObject(el);
+    bubble.position.y = .64 * SCALE;
+    ch.root.add(bubble);
+
+    // 挂载到岛屿 layer.group 下，使用区域局部坐标
+    layer.group.add(ch.root);
+
+    // 初始位置：广场中央或岛屿中心附近
+    const startX = layer.center[0] + (Math.random() - .5) * 3;
+    const startZ = layer.center[1] + (Math.random() - .5) * 3;
+    ch.root.position.set(startX, GRASS_Y, startZ);
+
+    const cam = v.isoCam.position;
+    ch.root.rotation.y = Math.atan2(cam.x - startX, cam.z - startZ);
+    ch.play('hop');
+    this.idleFor = 0;
+    this.nextIdle = 3 + Math.random() * 4;
+    v.invalidate(2);
+  }
+
+  /** 进了一座宫殿：在门口出现（兼容遗留宫殿） */
+  onPalaceLoaded() {
+    const v = this.v, b = v.built, doc = v.doc;
+    if (this.ch && doc && this.docId === doc.id) { this.grid = null; this.path = []; return; }
+    this.remove();
+    this.docId = doc?.id || null;
+    if (!b || !doc || this.hidden || v.readonly) return;
+    const ch = this.ch = new Character(this.pet.look, SCALE);
+    ch.root.name = 'kp-pet';
     const hit = this.hit = new THREE.Mesh(new THREE.SphereGeometry(.28 * SCALE, 8, 6), new THREE.MeshBasicMaterial());
     hit.position.y = .24 * SCALE;
     hit.visible = false;
     ch.root.add(hit);
-    // 对话气泡
     const el = document.createElement('div');
     el.className = 'kp-pet-bubble kp-hidden';
     const bubble = this.bubble = new CSS2DObject(el);
@@ -91,7 +135,6 @@ export class Companion {
     let p: P2 = door ? [door.x - door.nx * .9, door.z - door.nz * .9] : [b.bounds.getCenter(new THREE.Vector3()).x, b.bounds.getCenter(new THREE.Vector3()).z];
     p = g?.nearestFree(p[0], p[1]) || p;
     ch.root.position.set(p[0], 0, p[1]);
-    // 面朝镜头
     const cam = v.isoCam.position;
     ch.root.rotation.y = Math.atan2(cam.x - p[0], cam.z - p[1]);
     ch.play('hop');
@@ -103,7 +146,7 @@ export class Companion {
     v.invalidate(2);
   }
 
-  /** 离开宫殿 / 关掉 */
+  /** 离开 / 关掉 */
   remove() {
     if (!this.ch) return;
     this.bubble?.element.remove();
@@ -116,6 +159,7 @@ export class Companion {
     this.path = [];
     this.grid = null;
     this.docId = null;
+    this.activeRegionId = null;
   }
 
   /** 离开宫殿：收起小管家和面板 */
@@ -130,6 +174,7 @@ export class Companion {
   }
 
   private walkGrid(): WalkGrid | null {
+    if (this.v.level !== 'palace') return null;
     const b = this.v.built;
     if (!b) return null;
     const colliders = this.v.colliders();
@@ -149,11 +194,25 @@ export class Companion {
 
   /** 走到 (x, z)；face 给了就到了之后面朝那里 */
   walkTo(x: number, z: number, face?: P2 | number) {
-    const ch = this.ch, g = this.walkGrid();
+    const ch = this.ch;
     if (!ch) return;
-    const from: P2 = [ch.root.position.x, ch.root.position.z];
-    const path = g?.path(from, [x, z]) || [from, [x, z]];
-    this.path = path.slice(1);
+    if (this.v.level === 'palace') {
+      const g = this.walkGrid();
+      const from: P2 = [ch.root.position.x, ch.root.position.z];
+      const path = g?.path(from, [x, z]) || [from, [x, z]];
+      this.path = path.slice(1);
+    } else {
+      // 岛屿地表漫游：直走或者沿 waypoint 前进
+      const from: P2 = [ch.root.position.x, ch.root.position.z];
+      const mx = (from[0] + x) / 2 + (Math.random() - .5) * 1.5;
+      const mz = (from[1] + z) / 2 + (Math.random() - .5) * 1.5;
+      const layer = this.v.region ? this.v.town.regions.get(this.v.region.id) : undefined;
+      if (layer && layer.onLand(mx, mz, 1.5)) {
+        this.path = [[mx, mz], [x, z]];
+      } else {
+        this.path = [[x, z]];
+      }
+    }
     this.faceAfter = face ?? null;
     if (this.path.length) ch.play('walk');
     this.idleFor = 0;
@@ -163,17 +222,31 @@ export class Companion {
   /** 选中了一件东西：跑到它前面（靠镜头这一侧） */
   onSelect(obj: THREE.Object3D | null) {
     if (!this.ch || !obj || this.v.mode !== 'iso') return;
-    const c = ownBox(obj).getCenter(new THREE.Vector3());
-    const dir = new THREE.Vector3().subVectors(this.v.orbit.target, this.v.isoCam.position).setY(0).normalize();
-    // 站在物件靠镜头一侧、稍微偏一点，不挡住它
-    const side = new THREE.Vector3(-dir.z, 0, dir.x);
-    const size = ownBox(obj).getSize(new THREE.Vector3());
-    const r = Math.max(size.x, size.z) / 2 + .35;
-    const tx = c.x - dir.x * r + side.x * .35, tz = c.z - dir.z * r + side.z * .35;
-    const p = this.walkGrid()?.nearestFree(tx, tz, 1.5) || [tx, tz];
-    // 侧身对着镜头、稍微转向物件（像在介绍它）
-    const toCam = Math.atan2(-dir.x, -dir.z), toItem = Math.atan2(c.x - p[0], c.z - p[1]);
-    this.walkTo(p[0], p[1], toCam + angleDiff(toCam, toItem) * .35);
+    if (this.v.level === 'palace') {
+      const c = ownBox(obj).getCenter(new THREE.Vector3());
+      const dir = new THREE.Vector3().subVectors(this.v.orbit.target, this.v.isoCam.position).setY(0).normalize();
+      const side = new THREE.Vector3(-dir.z, 0, dir.x);
+      const size = ownBox(obj).getSize(new THREE.Vector3());
+      const r = Math.max(size.x, size.z) / 2 + .35;
+      const tx = c.x - dir.x * r + side.x * .35, tz = c.z - dir.z * r + side.z * .35;
+      const p = this.walkGrid()?.nearestFree(tx, tz, 1.5) || [tx, tz];
+      const toCam = Math.atan2(-dir.x, -dir.z), toItem = Math.atan2(c.x - p[0], c.z - p[1]);
+      this.walkTo(p[0], p[1], toCam + angleDiff(toCam, toItem) * .35);
+    }
+  }
+
+  /** 在岛屿上选了摆设或便签：跑过去围观 */
+  onSelectPropOrNote(localX: number, localZ: number) {
+    if (!this.ch || this.v.far) return;
+    const layer = this.v.region ? this.v.town.regions.get(this.v.region.id) : undefined;
+    if (!layer) return;
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 1.4 + Math.random() * 0.8;
+    const tx = localX + Math.cos(angle) * dist;
+    const tz = localZ + Math.sin(angle) * dist;
+    if (layer.onLand(tx, tz, 1.0)) {
+      this.walkTo(tx, tz, [localX, localZ]);
+    }
   }
 
   /** 头顶冒一句话 */
@@ -206,7 +279,9 @@ export class Companion {
     if (!ch) return;
     ch.play('wave');
     const cam = v.isoCam.position;
-    ch.root.rotation.y = Math.atan2(cam.x - ch.root.position.x, cam.z - ch.root.position.z);
+    const p = new THREE.Vector3();
+    ch.root.getWorldPosition(p);
+    ch.root.rotation.y = Math.atan2(cam.x - p.x, cam.z - p.z);
     this.path = [];
     const tip = t(TIPS[Math.floor(Math.random() * TIPS.length)]);
     this.say(html`${rich(t('<b>{name}</b>：{tip}', { name: escapeHtml(this.petName), tip: escapeHtml(tip) }))}`, 5200);
@@ -216,11 +291,22 @@ export class Companion {
   /** 每帧；返回 true 表示需要继续渲染 */
   update(dt: number): boolean {
     this.time += dt;
-    const ch = this.ch, v = this.v;
+    const v = this.v;
+
+    // 如果在岛屿层级且尚未创建，或者切换了岛屿，确保创建
+    if (v.level === 'town' && !v.far) {
+      if (!this.ch || this.activeRegionId !== v.region?.id) {
+        this.ensureWorldCompanion();
+      }
+    }
+
+    const ch = this.ch;
     if (!ch) return false;
-    const show = v.level === 'palace' && !v.editor.active;
+
+    const show = !this.hidden && (v.level === 'town' ? !v.far : (v.level === 'palace' && !v.editor.active));
     if (ch.root.visible !== show) { ch.root.visible = show; v.invalidate(1); }
     if (!show) return false;
+
     let busy = false;
     if (this.bubble && this.bubbleUntil && this.time > this.bubbleUntil) {
       this.bubbleUntil = 0;
@@ -251,12 +337,13 @@ export class Companion {
     } else if (v.mode === 'walk') {
       busy = this.follow(dt) || busy;
     } else {
-      // 闲着：隔一会儿东张西望，或者溜达到另一件家具旁边
+      // 闲着：隔一会儿东张西望，或者在岛上溜达
       this.idleFor += dt;
-      if (this.idleFor > this.nextIdle && !v.selected) {
+      if (this.idleFor > this.nextIdle) {
         this.idleFor = 0;
-        this.nextIdle = 7 + Math.random() * 9;
-        if (Math.random() < .45) ch.play('look');
+        this.nextIdle = 5 + Math.random() * 7;
+        if (Math.random() < .4) ch.play('look');
+        else if (Math.random() < .25) ch.play('hop');
         else this.wander();
       }
     }
@@ -275,7 +362,6 @@ export class Companion {
     const p = ch.root.position;
     const d = Math.hypot(me.x - p.x, me.z - p.z);
     if (d < 1.6) {
-      // 够近：转过来看着你
       const yaw = Math.atan2(me.x - p.x, me.z - p.z);
       if (Math.abs(angleDiff(ch.root.rotation.y, yaw)) > .3) { ch.root.rotation.y = yaw; return true; }
       return false;
@@ -287,10 +373,39 @@ export class Companion {
     return true;
   }
 
-  /** 随便挑一件家具，溜达过去 */
+  /** 溜达：在岛上或房间里挑一个附近的点走过去 */
   private wander() {
+    const ch = this.ch, v = this.v;
+    if (!ch) return;
+
+    if (v.level === 'town') {
+      const layer = v.region ? v.town.regions.get(v.region.id) : undefined;
+      if (!layer) return;
+
+      const p = ch.root.position;
+      // 倾向于在当前位置周围 2~6 米内找合法陆地点
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = 2.5 + Math.random() * 4.5;
+        const tx = p.x + Math.cos(ang) * dist;
+        const tz = p.z + Math.sin(ang) * dist;
+
+        if (layer.onLand(tx, tz, 2.0)) {
+          this.walkTo(tx, tz);
+          return;
+        }
+      }
+      // 如果尝试失败，走向岛中心附近
+      const cx = layer.center[0] + (Math.random() - .5) * 4;
+      const cz = layer.center[1] + (Math.random() - .5) * 4;
+      if (layer.onLand(cx, cz, 1.5)) {
+        this.walkTo(cx, cz);
+      }
+      return;
+    }
+
     const b = this.v.built;
-    if (!b || !this.ch) return;
+    if (!b) return;
     const items = [...b.itemObjects.values()];
     if (!items.length) return;
     const obj = items[Math.floor(Math.random() * items.length)];
@@ -298,8 +413,7 @@ export class Companion {
     const a = Math.random() * Math.PI * 2;
     const p = this.walkGrid()?.nearestFree(c.x + Math.sin(a) * .7, c.z + Math.cos(a) * .7, 1.2);
     if (!p) return;
-    // 别走太远（大宫殿里一趟走半天）
-    const here = this.ch.root.position;
+    const here = ch.root.position;
     if (Math.hypot(p[0] - here.x, p[1] - here.z) > 7) return;
     this.walkTo(p[0], p[1], [c.x, c.z]);
   }

@@ -19,16 +19,6 @@ export function pickImageFile(): Promise<File | null> {
   return pickFile('image/*');
 }
 
-/** 读成 data URL（给视觉模型的图片） */
-export function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result as string);   // readAsDataURL 的结果是字符串
-    fr.onerror = () => reject(fr.error);
-    fr.readAsDataURL(blob);
-  });
-}
-
 /** 打开系统的文件选择框；accept 同 <input type="file"> */
 export function pickFile(accept: string): Promise<File | null> {
   return new Promise((resolve) => {

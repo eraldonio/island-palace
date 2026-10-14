@@ -4,6 +4,7 @@ import path from 'node:path';
 
 // dev-only：/__snapshot 接收页面 POST 的截图（canvas 图片），写到 .snapshots/ 方便无界面调试
 export default defineConfig({
+  base: './',
   server: { host: '127.0.0.1' },
   plugins: [{
     name: 'kp-dev-snapshot',

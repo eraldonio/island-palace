@@ -1,6 +1,6 @@
 export * from './schema';
 export { materializeDecor, DECOR } from './decor';
-export type { HostAdapter, Prefs, ContentPart, ChatMessage, AiAdapter } from './host';
+export type { HostAdapter, Prefs } from './host';
 export { PalaceView, type PalaceViewOptions } from './view';
 export * from './world';
 export { propKind, propKinds, buildProp, bakeRegionProps, registerProp, decorateNow, type PropKind } from './props';
@@ -13,7 +13,6 @@ export { createKit } from './kit';
 export { sha256Hex, mediaIdOf, MEDIA_ID } from './hash';
 export { storeMedia } from './media';
 export { PalaceStore, type StorageAdapter } from './store';
-export { createOpenAiAdapter, OPENAI_DEFAULTS, isLocalUrl, joinUrl, stripThink, apiErrorText, type OpenAiConfig, type HttpPost } from './openai';
 export { cleanLook, seededLook, SPECIES, ACCESSORIES, DEFAULT_LOOK, type Look, type Species, type Accessory } from './look';
 export { t, tc, setLocale, getLocale, normalizeLocale, isZh, type Locale } from './i18n';
 export { html, rich, Rich, type Child } from './dom';

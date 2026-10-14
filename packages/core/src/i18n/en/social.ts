@@ -2,10 +2,10 @@
 export const social: Record<string, string> = {
   // ---------------- 小管家（companion.ts） ----------------
   '豆豆': 'Bean',
-  '双击地板可以走进去看看，像真的在房间里一样。': "Double-click the floor to walk in — just like being in the room!",
-  '按 B 进入搭建模式：摆家具、改墙、加门窗。': 'Press B to build: place furniture, change walls, add doors and windows.',
-  '夜里（按 N）宫殿会亮起灯，换个心情。': 'At night (press N) the palace lights up — a nice change of mood.',
-  '你好！我是小管家 <b>{name}</b>，以后我陪你在岛上生活。点我可以给我换装哦～': "Hi! I'm <b>{name}</b>, your pet. I'll live on the island with you. Click me to dress me up~",
+  '点我可以换衣服、换配饰，还能换物种哦～': 'Click me to change my outfit, accessories, or even species~',
+  '在岛上按 B 可以布置小镇，随心摆放摆设和便签。': 'Press B on the island to arrange: place scenery props and sticky notes.',
+  '夜里（按 N）整个世界会亮起灯火，星光漫天。': 'At night (press N) warm lanterns light up across the island under the stars.',
+  '你好！我是小管家 <b>{name}</b>，以后我陪你在岛上生活。点我可以给我换装哦～': "Hi! I'm <b>{name}</b>, your companion. I'll roam the islands with you. Click me to dress me up~",
   '<b>{name}</b>：{tip}': '<b>{name}</b>: {tip}',
   '小管家': 'Pet',
   '、': ', ',

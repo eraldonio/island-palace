@@ -42,11 +42,7 @@ export const forest: ThemePack = {
   },
 
   plaza(ctx) {
-    const { K, mats, raw } = ctx;
     plazaBase(ctx);
-    // 古树脚下的土壤（生几何：算广场铺装的一部分，不随摆设动）
-    const soil = K.mesh(new THREE.CylinderGeometry(1.9, 1.9, .08, 32), mats.moss, false);
-    soil.position.y = GRASS_Y + .1; raw.add(soil);
   },
 
   props(ctx, place) {

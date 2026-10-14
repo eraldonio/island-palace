@@ -83,6 +83,10 @@ export class TownController {
   private listOpen = false;
   private panel: 'build' | 'island' | 'props' | null = null;
   private palette: PaletteItem[] = [];
+  /** 岛屿捏形工具：正在捏形 / 刷地形扩展 */
+  sculptMode = false;
+  sculptBrush: 'expand' | 'shrink' = 'expand';
+  private sculptDrag: { regionId: string; mode: 'expand' | 'shrink'; before: string; lastApply: number } | null = null;
   private paletteSel = 0;
   private confirmResolve: ((ok: boolean) => void) | null = null;
   private planCache = new Map<string, DocumentFragment>();
@@ -169,7 +173,7 @@ export class TownController {
   private get docs() { return this.v.docs; }
   private get world() { return this.v.world; }
   /** 拖动 / 放置进行中：镜头所在的岛不要自动切换 */
-  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing || !!this.notePlacing || !!this.noteLive || !!this.noteResize; }
+  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing || !!this.notePlacing || !!this.noteLive || !!this.noteResize || !!this.sculptDrag; }
 
   private layerOf(regionId: string): RegionLayer | undefined { return this.town.regions.get(regionId); }
   private regionById(id: string) { return this.world.regions.find(r => r.id === id); }
@@ -189,15 +193,13 @@ export class TownController {
         <button class="kp-loci-btn kp-near-only" data-act="regionSettings" title="${t('这座岛的名字和场景')}">${rich(ICONS.map)}<span>${t('岛屿')}</span></button>
       </div>
       <div class="kp-topright kp-iso-only">
-        <div class="kp-seg kp-glass kp-town-only kp-town-view">
-          <button class="kp-on" data-act="viewMap" data-ref="segMap" title="${t('地图')}">${rich(ICONS.map)}<span>${t('地图')}</span></button>
-          <button data-act="viewList" data-ref="segList" title="${t('宫殿列表')}">${rich(ICONS.list)}<span>${t('列表')}</span></button>
-        </div>
-        <button class="kp-search kp-glass" data-act="palette" title="${t('搜索宫殿或岛（⌘K / Ctrl+K）')}">${rich(ICONS.search)}<span>${t('搜索宫殿或岛')}</span><kbd>⌘K</kbd></button>
+        <button class="kp-search kp-glass" data-act="palette" title="${t('搜索岛屿（⌘K / Ctrl+K）')}">${rich(ICONS.search)}<span>${t('搜索岛屿')}</span><kbd>⌘K</kbd></button>
       </div>
       <nav class="kp-bar kp-glass kp-town-only kp-town-view kp-near-only">
-        <button class="kp-primary" data-act="buildPalace" title="${t('在这座岛上建造一座新宫殿')}">${rich(ICONS.plus)}<span>${t('建造宫殿')}</span></button>
-        <button data-act="townEdit" title="${t('布置小镇：拖动宫殿和摆设换位置、旋转（B）')}">${rich(ICONS.move)}<span>${t('布置')}</span></button>
+        <button class="kp-primary" data-act="propPanel" title="${t('添加摆设（A）')}">${rich(ICONS.plus)}<span>${t('添加摆设')}</span></button>
+        <button data-act="noteAdd" title="${t('添加便签')}">${rich(ICONS.note)}<span>${t('便签')}</span></button>
+        <button data-act="sculptStart" title="${t('捏形工具：改变岛屿形状与大小')}">${rich(ICONS.build)}<span>${t('捏形')}</span></button>
+        <button data-act="townEdit" title="${t('布置小岛：拖动摆设和便签换位置、旋转（B）')}">${rich(ICONS.move)}<span>${t('布置')}</span></button>
         <span class="kp-sep"></span>
         <button data-act="toWorld" title="${t('拉远，看看所有的岛')}">${rich(ICONS.globe)}<span>${t('群岛')}</span></button>
         <button class="kp-icon" data-act="rotl" title="${t('向左旋转 90°（Q）')}">${rich(ICONS.rotl)}</button>
@@ -220,7 +222,9 @@ export class TownController {
         <span class="kp-bar-hint" data-ref="townEditHint"></span>
         <button class="kp-icon kp-near-only" data-act="propPanel" title="${t('添加摆设（A）')}">${rich(ICONS.plus)}</button>
         <button class="kp-icon kp-near-only" data-act="noteAdd" title="${t('添加便签')}">${rich(ICONS.note)}</button>
+        <button class="kp-icon kp-near-only" data-act="sculptStart" title="${t('捏形工具：改变岛屿形状与大小')}">${rich(ICONS.build)}</button>
         <button class="kp-icon kp-near-only" data-act="townRotate" title="${t('旋转选中的宫殿或摆设 90°（R）')}">${rich(ICONS.rotr)}</button>
+        <button class="kp-icon kp-near-only" data-act="resetIslandScenery" title="${t('重新生成风景：清除摆设修改，重置为自然风景')}">${rich(ICONS.reset)}</button>
         <span class="kp-sep"></span>
         <button class="kp-icon" data-act="townUndo" data-ref="townUndo" title="${t('撤销（⌘Z）')}" disabled>${rich(ICONS.undo)}</button>
         <button class="kp-icon" data-act="townRedo" data-ref="townRedo" title="${t('重做（⇧⌘Z）')}" disabled>${rich(ICONS.redo)}</button>
@@ -234,7 +238,7 @@ export class TownController {
       <div class="kp-panel kp-list kp-glass kp-hidden kp-town-only" data-ref="propPanel"></div>
       <div class="kp-overlay kp-hidden" data-ref="paletteWrap">
         <div class="kp-palette kp-glass">
-          <label class="kp-pal-input">${rich(ICONS.search)}<input data-ref="paletteInput" placeholder="${t('搜索宫殿或岛…')}" autocomplete="off" spellcheck="false"></label>
+          <label class="kp-pal-input">${rich(ICONS.search)}<input data-ref="paletteInput" placeholder="${t('搜索岛屿…')}" autocomplete="off" spellcheck="false"></label>
           <div class="kp-pal-list" data-ref="paletteList"></div>
           <div class="kp-pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> ${t('选择')}</span><span><kbd>Enter</kbd> ${t('前往')}</span><span><kbd>Esc</kbd> ${t('关闭')}</span></div>
         </div>
@@ -272,10 +276,10 @@ export class TownController {
         : [t('{n} 座岛', { n: this.world.regions.length }), t('{n} 座宫殿', { n: placed })].join(' · ');
       v.ui.townMark.replaceChildren(html`${rich(ICONS.globe)}`);
     } else {
-      const docs = this.region.palaces.map(p => this.docs.get(p.palaceId)).filter(Boolean);
+      const th = getTheme(this.region.theme);
       v.ui.townTitle.textContent = this.region.name;
-      v.ui.townSub.textContent = docs.length ? t('{n} 座宫殿', { n: docs.length }) : t('还没有宫殿 · 点「建造宫殿」开始');
-      v.ui.townMark.textContent = getTheme(this.region.theme).icon;
+      v.ui.townSub.textContent = t(th.desc);
+      v.ui.townMark.textContent = th.icon;
     }
     for (const s of this.town.shells.values()) {
       this.town.updateTag(s);
@@ -409,27 +413,22 @@ export class TownController {
     const e = v.lastPointer;
     if (e && !v.camTween) {
       v.lastPointer = null;
-      if (!e.buttons && !this.drag && !this.placing && !this.propPlacing && !this.notePlacing) {
+      if (!e.buttons && !this.drag && !this.placing && !this.propPlacing && !this.notePlacing && !this.sculptMode) {
         if (v.far) {
           this.setRegionHover(this.pickRegion(e));
           this.setPropHover(null);
-        } else if (this.editing) {
-          // 布置中镜头飘到另一座岛：先把它的装饰烘焙成数据，那边的摆设才能拾取（样子不变）
+        } else {
           const layer = this.layerOf(this.region.id);
           const g = layer && this.town.groundOf(this.ray(e), layer);
           if (this.region.props === undefined && g && layer.onLand(g[0], g[1])) this.ensureProps(this.region);
-          // 摆设优先于地面，深度上仍让给更近的宫殿
           const hit = this.pickPropOrPalace(e);
           this.setPropHover(hit.prop?.propId ?? null);
           this.setHover(hit.palaceId ?? this.tagHover);
-        } else {
-          this.setPropHover(null);
-          this.setHover(this.pickPalace(e) ?? this.tagHover);
         }
         this.showTip(e);
       } else v.ui.tip.classList.remove('kp-on');
     }
-    const busy = v.far || this.editing || !!this.placing || !!this.propPlacing || !!this.drag || !!v.camTween;
+    const busy = v.far || this.editing || !!this.placing || !!this.propPlacing || !!this.drag || !!this.sculptMode || !!this.sculptDrag || !!v.camTween;
     const target = busy ? null : (this.hoveredId ?? this.selectedId);
     const ready = this.hoveredId ? performance.now() - this.hoverSince > PEEK_DELAY : true;
     if (target && ready && !(v.peek?.id === target && v.peek.open)) v.openPeek(target);
@@ -526,7 +525,8 @@ export class TownController {
     this.selectedProp = id;
     this.town.setPropSelection(id);
     if (id) { this.selectedNote = null; this.select(null); }
-    else { this.renderCard(); this.updateMarker(); }
+    this.renderCard();
+    this.updateMarker();
     this.v.invalidate();
   }
 
@@ -586,11 +586,21 @@ export class TownController {
   onClick(e: PointerEvent) {
     if (this.placing || this.propPlacing || this.notePlacing) return;
     if (this.v.far) { this.selectRegion(this.pickRegion(e)); return; }
-    if (!this.editing) { this.select(this.pickPalace(e)); return; }
+    if (this.v.companion.click(e.clientX, e.clientY)) return;
     const hit = this.pickPropOrPalace(e);
-    if (hit.note) this.selectNote(hit.note.noteId);
-    else if (hit.prop) this.selectProp(hit.prop.propId);
-    else { this.selectNote(null); this.select(this.pickPalace(e)); }
+    if (hit.note) {
+      this.selectNote(hit.note.noteId);
+      const at = this.noteAt(hit.note.noteId);
+      if (at) this.v.companion.onSelectPropOrNote(at.note.pos[0], at.note.pos[1]);
+    } else if (hit.prop) {
+      this.selectProp(hit.prop.propId);
+      const at = this.propAt(hit.prop.propId);
+      if (at) this.v.companion.onSelectPropOrNote(at.prop.pos[0], at.prop.pos[1]);
+    } else {
+      this.selectNote(null);
+      this.selectProp(null);
+      this.select(this.pickPalace(e));
+    }
   }
 
   onDblClick(e: MouseEvent) {
@@ -600,9 +610,11 @@ export class TownController {
       if (rid) this.v.flyToRegion(rid);
       return;
     }
-    if (this.editing) {
-      const hit = this.pickPropOrPalace(e);
-      if (hit.note) { this.selectNote(hit.note.noteId); this.startNoteLive(hit.note.noteId); return; }
+    const hit = this.pickPropOrPalace(e);
+    if (hit.note) {
+      this.selectNote(hit.note.noteId);
+      this.startNoteLive(hit.note.noteId);
+      return;
     }
     const id = this.pickPalace(e);
     if (id) this.v.enterPalace(id);
@@ -711,23 +723,34 @@ export class TownController {
     const r = this.regionById(regionId);
     if (!r) { card.classList.add('kp-hidden'); return; }
     const theme = getTheme(r.theme);
-    const docs = r.palaces.map(p => this.docs.get(p.palaceId)).filter(Boolean);
     const last = this.world.regions.length <= 1;
+    const propsCount = r.props?.length ?? 0;
+    const notesCount = r.notes?.length ?? 0;
+    const currentScale = r.shapeOffsets?.length ? Math.round(r.shapeOffsets.reduce((s, n) => s + n, 0) / r.shapeOffsets.length) : 0;
     card.replaceChildren(html`
       <button class="kp-close" data-act="regionDeselect">×</button>
       <div class="kp-room">${t('岛屿')} · ${theme.icon} ${t(theme.name)}</div>
       <input class="kp-name" data-field="regionName" maxlength="40" spellcheck="false">
-      <div class="kp-stats">${t('{n} 座宫殿', { n: docs.length })}</div>
-      <div class="kp-subtitle">${t('场景')}</div>
+      <div class="kp-stats">${t('{props} 个摆设 · {notes} 条便签', { props: propsCount, notes: notesCount })}</div>
+      <div class="kp-subtitle">${t('场景风格')}</div>
       <div class="kp-themes">${THEMES.map(th => html`
         <button class="kp-theme${th.id === r.theme ? ' kp-on' : ''}" data-act="regionTheme" data-theme="${th.id}" title="${t(th.desc)}">
           <i style="background:linear-gradient(135deg, ${th.colors[0]} 0 55%, ${th.colors[1]} 55% 78%, ${th.colors[2]} 78%)">${th.icon}</i><span>${t(th.name)}</span>
         </button>`)}</div>
-      ${docs.length ? html`<div class="kp-subtitle">${t('岛上的宫殿')}</div><div class="kp-mini">${docs.slice(0, 5).map(d => html`
-        <button data-act="regionPalace" data-id="${d.id}"><b>${d.name}</b></button>`)}
-        ${docs.length > 5 ? html`<div class="kp-more-note">${t('还有 {n} 座…', { n: docs.length - 5 })}</div>` : ''}</div>` : html`<div class="kp-note-sm">${t('这座岛还是空的，前往后点「建造宫殿」。')}</div>`}
+      <div class="kp-subtitle">${t('岛屿大小')}</div>
+      <div class="kp-field">
+        <span>${t('整体尺寸')}</span>
+        <input type="range" data-field="regionScale" min="-20" max="40" step="1" value="${currentScale}">
+        <span class="kp-val">${currentScale >= 0 ? '+' : ''}${currentScale}m</span>
+      </div>
       <div class="kp-row">
-        <button class="kp-danger" data-act="regionDelete" ${docs.length || last ? 'disabled' : ''} title="${last ? t('至少要保留一座岛') : docs.length ? t('先把岛上的宫殿搬走或删除') : t('删除这座空岛')}">${t('删除')}</button>
+        <button data-act="regionScaleStep" data-d="-2" title="${t('缩小岛屿（-2m）')}">- ${t('缩小')}</button>
+        <button data-act="regionScaleStep" data-d="2" title="${t('放大岛屿（+2m）')}">+ ${t('放大')}</button>
+        <button class="kp-primary kp-grow" data-act="sculptStart" title="${t('用画笔在海面或海岸上捏造岛屿形状')}">${rich(ICONS.build)} ${t('捏形工具')}</button>
+      </div>
+      <div class="kp-row">
+        ${(r.shapeOffsets?.length || r.props !== undefined) ? html`<button class="kp-danger" data-act="regionResetScenery" title="${t('恢复默认海岸线与自然风景')}">${t('重置风景')}</button>` : ''}
+        <button class="kp-danger" data-act="regionDelete" ${last ? 'disabled' : ''} title="${last ? t('至少要保留一座岛') : t('删除这座岛屿')}">${t('删除')}</button>
         <button class="kp-primary kp-grow" data-act="regionGo">${t('前往 →')}</button>
       </div>`);
     (card.querySelector('[data-field="regionName"]') as HTMLInputElement).value = r.name;
@@ -742,7 +765,23 @@ export class TownController {
       const at = this.propAt(this.selectedProp);
       const spec = at && propKind(at.prop.kind)?.params?.find(p => p.key === param);
       if (!spec) return;
-      this.setPropParam(param, spec.options ? spec.options[Number(el.value)]?.[0] : Number(el.value), !commit);
+      if (spec.options) {
+        this.setPropParam(param, spec.options[Number(el.value)]?.[0], !commit);
+        return;
+      }
+      let val = Number(el.value);
+      if (isNaN(val)) val = spec.def ?? 0;
+      if (spec.min !== undefined && val < spec.min) val = spec.min;
+      if (spec.max !== undefined && val > spec.max) val = spec.max;
+      // 同步兄弟输入控件（滑杆 ↔ 数字框）
+      const parent = el.closest('.kp-field');
+      if (parent) {
+        parent.querySelectorAll<HTMLInputElement>(`input[data-param="${param}"]`).forEach(inp => {
+          if (inp !== el) inp.value = String(val);
+        });
+      }
+      if (commit && el.type === 'number') el.value = String(val);
+      this.setPropParam(param, val, !commit);
       return;
     }
     if (field === 'palaceName' && this.selectedId) {
@@ -767,9 +806,48 @@ export class TownController {
       this.layerOf(r.id)?.updateTag(this.docs);
       if (commit) { this.v.worldChanged(); }
       this.v.invalidate();
+    } else if (field === 'regionScale') {
+      const r = this.regionById(this.selectedRegion || this.region.id);
+      if (!r) return;
+      const val = Number(el.value) || 0;
+      this.applyRegionScale(r, val, commit);
     } else if (field === 'palaceRegion' && commit && el.value && this.selectedId) {
       this.movePalaceTo(this.selectedId, el.value);
     }
+  }
+
+  private applyRegionScale(r: W.WorldRegion, targetScale: number, commit: boolean) {
+    const count = 16;
+    if (!r.shapeOffsets || r.shapeOffsets.length !== count) {
+      r.shapeOffsets = new Array(count).fill(targetScale);
+    } else {
+      const avg = r.shapeOffsets.reduce((s, n) => s + n, 0) / count;
+      const diff = targetScale - avg;
+      r.shapeOffsets = r.shapeOffsets.map(n => Math.round(Math.max(-30, Math.min(60, n + diff)) * 10) / 10);
+    }
+    const card = this.v.ui.townCard;
+    const valSpan = card?.querySelector('.kp-field .kp-val');
+    if (valSpan) valSpan.textContent = `${targetScale >= 0 ? '+' : ''}${targetScale}m`;
+    const rangeInp = card?.querySelector<HTMLInputElement>('input[data-field="regionScale"]');
+    if (rangeInp) rangeInp.value = String(targetScale);
+
+    this.town.rebuildLand(r.id, this.docs);
+    const layer = this.layerOf(r.id);
+    if (layer) this.syncVegetation(r, layer);
+    this.v.settleRegions();
+    if (commit) {
+      this.pushUndo(this.snapshot());
+      this.v.worldChanged();
+    }
+    this.v.invalidate();
+  }
+
+  stepRegionScale(delta: number) {
+    const r = this.regionById(this.selectedRegion || this.region.id);
+    if (!r) return;
+    const currentScale = r.shapeOffsets?.length ? Math.round(r.shapeOffsets.reduce((s, n) => s + n, 0) / r.shapeOffsets.length) : 0;
+    const next = Math.max(-20, Math.min(40, currentScale + delta));
+    this.applyRegionScale(r, next, true);
   }
 
   // =====================================================================
@@ -919,12 +997,12 @@ export class TownController {
     return propKind(prop.kind)?.blocker ?? .5;
   }
 
-  /** 这个位置放不放得下：草地上、不压广场、不压宫殿地块、不和别的摆设挤在一起 */
+  /** 这个位置放不放得下：草地上、不压宫殿地块、不和别的摆设挤在一起 */
   private propFits(region: W.WorldRegion, layer: RegionLayer, prop: W.PlacedProp): boolean {
     const [x, z] = prop.pos;
     if (!layer.onLand(x, z, .4)) return false;
     const r = this.propRadius(prop);
-    if (Math.hypot(x, z) < W.PLAZA_R + r + PROP_GAP) return false;
+    if (region.palaces.length > 0 && Math.hypot(x, z) < W.PLAZA_R + r + PROP_GAP) return false;
     for (const placed of region.palaces) {
       const doc = this.docs.get(placed.palaceId);
       if (!doc) continue;
@@ -1574,6 +1652,156 @@ export class TownController {
     this.v.ui.noteEditorWrap?.classList.add('kp-hidden');
   }
 
+  // =====================================================================
+  // 岛屿捏形工具（扩建海岸 / 削减海湾）
+  // =====================================================================
+
+  startSculpt() {
+    const v = this.v;
+    if (v.far) { v.host.notify?.(t('先拉近到一座岛上再调整形状')); return; }
+    this.sculptMode = true;
+    this.sculptBrush = 'expand';
+    this.setEditing(false);
+    this.closePanel();
+    this.selectProp(null);
+    this.selectNote(null);
+    this.selectRegion(null);
+    v.root.classList.add('kp-town-placing');
+    this.updateSculptUI();
+    v.setCursor('crosshair');
+    v.invalidate();
+  }
+
+  setSculptBrush(brush: 'expand' | 'shrink') {
+    this.sculptBrush = brush;
+    this.updateSculptUI();
+    this.v.invalidate();
+  }
+
+  private updateSculptUI() {
+    const v = this.v;
+    const isExp = this.sculptBrush === 'expand';
+    v.ui.townPlaceHint.replaceChildren(html`
+      <div class="kp-seg" style="display:inline-flex;margin-right:8px;vertical-align:middle">
+        <button class="${isExp ? 'kp-on' : ''}" data-act="sculptBrushExpand">${t('填海扩岛')}</button>
+        <button class="${!isExp ? 'kp-on' : ''}" data-act="sculptBrushShrink">${t('削减海湾')}</button>
+      </div>
+      <span>${rich(isExp ? t('按住拖动扩建陆地（也可按住 <b>Alt / ⌥</b> 临时削减）') : t('按住拖动削减内凹海湾（也可松开 <b>Alt</b> 扩建）'))}</span>
+    `);
+  }
+
+  stopSculpt() {
+    if (!this.sculptMode) return;
+    this.sculptMode = false;
+    this.sculptDrag = null;
+    const v = this.v;
+    v.root.classList.remove('kp-town-placing');
+    v.setCursor('');
+    v.invalidate();
+  }
+
+  private applySculpt(e: PointerEvent, force = false) {
+    const v = this.v, region = this.region, layer = this.layerOf(region.id);
+    if (!layer) return;
+    const g = this.town.groundOf(this.ray(e), layer);
+    if (!g) return;
+    const now = performance.now();
+    if (!force && this.sculptDrag && now - this.sculptDrag.lastApply < 45) return;
+    if (this.sculptDrag) this.sculptDrag.lastApply = now;
+
+    const [cx, cz] = layer.center;
+    const dx = g[0] - cx, dz = g[1] - cz;
+    let angle = Math.atan2(dz, dx);
+    if (angle < 0) angle += Math.PI * 2;
+
+    const count = 16;
+    if (!region.shapeOffsets || region.shapeOffsets.length !== count) {
+      region.shapeOffsets = new Array(count).fill(0);
+    }
+
+    const normAngle = angle / (Math.PI * 2) * count;
+    const centerIdx = Math.round(normAngle) % count;
+    const isShrink = e.altKey ? this.sculptBrush === 'expand' : this.sculptBrush === 'shrink';
+    const delta = isShrink ? -1.8 : 1.8;
+
+    for (let k = -2; k <= 2; k++) {
+      const idx = (centerIdx + k + count) % count;
+      const weight = k === 0 ? 1 : Math.abs(k) === 1 ? 0.65 : 0.3;
+      const current = region.shapeOffsets[idx] ?? 0;
+      region.shapeOffsets[idx] = Math.round(Math.max(-30, Math.min(60, current + delta * weight)) * 10) / 10;
+    }
+
+    this.town.rebuildLand(region.id, this.docs);
+    this.syncVegetation(region, layer);
+    this.v.settleRegions();
+    this.v.invalidate();
+  }
+
+  /**
+   * 扩岛或缩岛时同步植被：
+   * 1. 缩岛削减时：清理已经不在陆地范围内的自然植物。
+   * 2. 扩岛扩大时：在新扩出的陆地空隙处补充散布自然植物。
+   */
+  private syncVegetation(region: W.WorldRegion, layer: RegionLayer) {
+    if (!region.props) return;
+    const NATURE_KINDS = new Set(['tree', 'conifer', 'shrub', 'flower', 'reed', 'blossom-tree', 'boulder', 'snowdrift']);
+    let changed = false;
+
+    // 1. 移除掉入海里的植物
+    const surviving = region.props.filter(p => {
+      if (!NATURE_KINDS.has(p.kind)) return true;
+      const keep = layer.onLand(p.pos[0], p.pos[1], 0.2);
+      if (!keep) changed = true;
+      return keep;
+    });
+
+    // 2. 检查新陆地并适量补种植物
+    const [cx, cz] = layer.center;
+    const maxR = layer.maxR;
+    const step = 4.5;
+    let addedCount = 0;
+    const maxAdd = 12;
+
+    const n0 = Math.floor((cx - maxR) / step), n1 = Math.ceil((cx + maxR) / step);
+    const m0 = Math.floor((cz - maxR) / step), m1 = Math.ceil((cz + maxR) / step);
+
+    for (let j = m0; j <= m1 && addedCount < maxAdd; j++) {
+      for (let i = n0; i <= n1 && addedCount < maxAdd; i++) {
+        const x = (i + 0.5) * step;
+        const z = (j + 0.5) * step;
+        if (!layer.onLand(x, z, 1.8)) continue;
+
+        // 检查附近是否已经有任何摆设
+        const hasNear = surviving.some(p => Math.hypot(p.pos[0] - x, p.pos[1] - z) < 3.2);
+        if (hasNear) continue;
+
+        // 根据主题风格选择自然植物种类
+        let kind = 'tree';
+        let params: Record<string, unknown> = {};
+        if (region.theme === 'snow') {
+          kind = 'conifer';
+          params = { h: 2.8, snow: true, leaf: 'pine' };
+        } else if (region.theme === 'sky') {
+          kind = Math.random() < 0.4 ? 'blossom-tree' : 'tree';
+          params = { h: 2.6, variant: 1 };
+        } else {
+          kind = Math.random() < 0.65 ? 'tree' : 'shrub';
+          params = { h: 2.8, variant: 0 };
+        }
+
+        const id = `${kind}-${Math.floor(Math.random() * 1e8).toString(36)}`;
+        surviving.push({ id, kind, pos: [Math.round(x * 10) / 10, Math.round(z * 10) / 10], params: { ...params, seed: Math.floor(Math.random() * 1e6) } });
+        addedCount++;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      region.props = surviving;
+      layer.rebuildDecor();
+    }
+  }
+
   private startPlacing(tplId: string) {
     const v = this.v, region = this.region;
     const name = ((v.ui.newName as HTMLInputElement)?.value || '').trim() || t('新宫殿 {n}', { n: region.palaces.length + 1 });
@@ -1691,6 +1919,24 @@ export class TownController {
     this.town.updateBounds();
     if (v.region === r) v.region = this.world.regions[0];
     this.pushUndo(before);
+    v.worldChanged();
+    v.invalidate(3);
+  }
+
+  private async resetIslandScenery(regionId: string) {
+    const v = this.v, r = this.regionById(regionId);
+    if (!r) return;
+    const ok = await this.confirm(t('重新生成风景？'), t('将清除这座岛上所有摆设的修改与新增，恢复并重新生成自然风景。'), t('重新生成'));
+    if (!ok) return;
+    const before = this.snapshot();
+    this.selectProp(null);
+    delete r.props;
+    delete r.shapeOffsets;
+    r.seed = Math.floor(Math.random() * 1e6);
+    this.town.rebuildLand(r.id, this.docs);
+    v.settleRegions();
+    this.pushUndo(before);
+    this.renderCard();
     v.worldChanged();
     v.invalidate(3);
   }
@@ -1821,21 +2067,10 @@ export class TownController {
       const tokens = q.split(/\s+/).filter(Boolean);
       const match = (s: string) => tokens.every(tok => s.toLowerCase().includes(tok));
       const out: PaletteItem[] = [];
-      const currentId = v.level === 'palace' ? v.doc?.id : null;
       for (const r of this.world.regions) {
-        const icon = getTheme(r.theme).icon;
-        for (const p of r.palaces) {
-          const d = this.docs.get(p.palaceId);
-          if (!d) continue;
-          const st = W.palaceStats(d);
-          const color = p.roofColor || W.palaceColor(d);
-          if (match(d.name + ' ' + r.name)) out.push({ kind: 'palace', id: d.id, title: d.name, sub: `${d.id === currentId ? t('当前所在 · ') : ''}${icon} ${r.name} · ${t('{n} 个房间', { n: st.rooms })}`, color });
-        }
-      }
-      if (tokens.length) {
-        for (const r of this.world.regions) {
-          const th = getTheme(r.theme), thName = t(th.name);
-          if (match(r.name + ' ' + thName + ' ' + th.name)) out.push({ kind: 'region', id: r.id, title: `${th.icon} ${r.name}`, sub: `${thName} · ${t('{n} 座宫殿', { n: r.palaces.length })}`, color: th.colors[0] });
+        const th = getTheme(r.theme), thName = t(th.name);
+        if (!tokens.length || match(r.name + ' ' + thName + ' ' + th.name)) {
+          out.push({ kind: 'region', id: r.id, title: `${th.icon} ${r.name}`, sub: `${thName}`, color: th.colors[0] });
         }
       }
       this.palette = out.slice(0, 60);
@@ -1848,7 +2083,7 @@ export class TownController {
         <i style="background:${it.color}"></i>
         <span><b>${it.title}</b><small>${it.sub}</small></span>
         <kbd>${kinds[it.kind]}</kbd>
-      </button>`) : html`<div class="kp-empty">${t('没有找到匹配的宫殿或岛')}</div>`}`);
+      </button>`) : html`<div class="kp-empty">${t('没有找到匹配的岛屿')}</div>`}`);
     list.querySelector('.kp-on')?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -1872,8 +2107,19 @@ export class TownController {
     if (this.placing) { this.placing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (this.propPlacing) { this.propPlacing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (this.notePlacing) { this.notePlacing.down = { x: e.clientX, y: e.clientY }; return false; }
-    if (!this.editing) return false;
+    if (this.sculptMode) {
+      this.sculptDrag = { regionId: this.region.id, mode: e.altKey ? 'shrink' : 'expand', before: this.snapshot(), lastApply: 0 };
+      this.applySculpt(e, true);
+      try { this.v.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* 合成事件 */ }
+      return true;
+    }
     const v = this.v;
+    if (!this.editing) {
+      if (v.far) return false;
+      const hit = this.pickPropOrPalace(e);
+      if (!hit.note && !hit.prop && !hit.palaceId) return false;
+      this.setEditing(true);
+    }
     if (v.far) {
       const rid = this.pickRegion(e);
       const r = rid && this.regionById(rid), layer = rid && this.layerOf(rid);
@@ -1912,6 +2158,10 @@ export class TownController {
   }
 
   onPointerMove(e: PointerEvent): boolean {
+    if (this.sculptDrag) {
+      this.applySculpt(e);
+      return true;
+    }
     if (this.noteResize) { this.moveNoteResize(e); return true; }
     if (this.propPlacing && !e.buttons) { this.movePropPlacing(e); return true; }
     if (this.notePlacing && !e.buttons) { this.moveNotePlacing(e); return true; }
@@ -1983,6 +2233,14 @@ export class TownController {
   }
 
   onPointerUp(e: PointerEvent): boolean {
+    if (this.sculptDrag) {
+      const before = this.sculptDrag.before;
+      this.sculptDrag = null;
+      this.pushUndo(before);
+      this.v.worldChanged();
+      this.v.invalidate();
+      return true;
+    }
     if (this.noteResize) { this.endNoteResize(); return true; }
     const np = this.notePlacing;
     if (np) {
@@ -2101,7 +2359,8 @@ export class TownController {
     if (this.editing && mod && k === 'd' && !this.v.far && this.selectedProp) { this.duplicateProp(); return true; }
     if (mod) return false;
     if (k === 'escape') {
-      if (this.noteLive) this.commitNoteLive();
+      if (this.sculptMode) this.stopSculpt();
+      else if (this.noteLive) this.commitNoteLive();
       else if (this.noteModal) this.closeNoteEditor();
       else if (this.notePlacing) { this.cancelNotePlacing(); this.setEditing(true); }
       else if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
@@ -2150,10 +2409,15 @@ export class TownController {
       case 'pickTemplate': this.startPlacing(el.dataset.tpl); return true;
       case 'pickTheme': this.createIsland(el.dataset.theme); return true;
       case 'townPlaceCancel':
-        if (this.notePlacing) { this.cancelNotePlacing(); this.setEditing(true); }
+        if (this.sculptMode) this.stopSculpt();
+        else if (this.notePlacing) { this.cancelNotePlacing(); this.setEditing(true); }
         else if (this.propPlacing) { this.cancelPropPlacing(); this.setEditing(true); }
         else this.cancelPlacing();
         return true;
+      case 'sculptStart': this.startSculpt(); return true;
+      case 'sculptBrushExpand': this.setSculptBrush('expand'); return true;
+      case 'sculptBrushShrink': this.setSculptBrush('shrink'); return true;
+      case 'regionScaleStep': this.stepRegionScale(Number(el.dataset.d) || 0); return true;
       case 'townEdit': this.setEditing(true); return true;
       case 'townEditDone': this.setEditing(false); return true;
       case 'townRotate': this.rotateSelected(); return true;
@@ -2205,6 +2469,8 @@ export class TownController {
         return true;
       }
       case 'regionTheme': if (this.selectedRegion) this.setTheme(this.selectedRegion, el.dataset.theme); return true;
+      case 'regionResetScenery': if (this.selectedRegion) void this.resetIslandScenery(this.selectedRegion); return true;
+      case 'resetIslandScenery': if (this.region) void this.resetIslandScenery(this.region.id); return true;
       case 'regionDelete': if (this.selectedRegion) void this.deleteRegion(this.selectedRegion); return true;
       case 'regionPalace': {
         const pid = el.dataset.id, rid = v.regionOf(pid)?.id;
@@ -2287,6 +2553,5 @@ function propParamField(spec: ParamSpec, value: unknown) {
   }
   const n = Number(value ?? spec.def ?? 0);
   const step = spec.step ?? .1;
-  const shown = step >= 1 ? String(Math.round(n)) : `${n.toFixed(step < .05 ? 2 : 1)} m`;
-  return html`<label class="kp-field"><span>${t(spec.label)}</span><input type="range" data-param="${spec.key}" min="${spec.min}" max="${spec.max}" step="${step}" value="${n}"><output>${shown}</output></label>`;
+  return html`<label class="kp-field"><span>${t(spec.label)}</span><input type="range" data-param="${spec.key}" min="${spec.min}" max="${spec.max}" step="${step}" value="${n}"><input type="number" class="kp-param-num" data-param="${spec.key}" min="${spec.min}" max="${spec.max}" step="${step}" value="${n}"></label>`;
 }

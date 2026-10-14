@@ -1,4 +1,4 @@
-/* 英文字典：content（键是中文原文）——模板、拍照识物、大模型接口 */
+/* 英文字典：content（键是中文原文）——模板 */
 export const content: Record<string, string> = {
   // ---------------- 模板：宫殿 ----------------
   '小屋': 'Cottage',
@@ -68,38 +68,4 @@ export const content: Record<string, string> = {
   '柠檬树': 'Lemon tree',
   '大树 · 西南': 'Big tree · southwest',
   '大树 · 东北': 'Big tree · northeast',
-
-  // ---------------- 拍照识物：提示词 ----------------
-  '{type}：{name}（{cat}，挂墙）': '{type}: {name} ({cat}, wall-mounted)',
-  '{type}：{name}（{cat}）': '{type}: {name} ({cat})',
-  '积木格式（目录里没有合适的类型时用）：': 'Shapes format (use only when nothing in the catalog fits):',
-  '{"name":"落地钟","type":"blocks","parts":[': '{"name":"Grandfather clock","type":"blocks","parts":[',
-  '  {"shape":"cyl","size":[0.36,0.02],"pos":[0,1.58,0.155],"rot":[90,0,0],"color":"#f3ead8","slot":"face","name":"表盘"},': '  {"shape":"cyl","size":[0.36,0.02],"pos":[0,1.58,0.155],"rot":[90,0,0],"color":"#f3ead8","slot":"face","name":"Clock face"},',
-  '- 单位米；pos 是形体中心；rot 为度；物件正面朝 +z；落地、居中会自动处理': '- Units are meters; pos is the shape’s center; rot is in degrees; the item faces +z; grounding and centering are automatic',
-  '- shape：box [宽,高,深]（round 圆角）· cyl [顶直径,高,底直径] · cone [底直径,高] · sphere [x,y,z 直径] · torus [外径,管径] · lathe（profile: [[半径,高度],…]）· extrude（outline: [[x,y],…], depth）· group（children）': '- shape: box [width,height,depth] (round = corner radius) · cyl [top diameter,height,bottom diameter] · cone [base diameter,height] · sphere [x,y,z diameters] · torus [outer diameter,tube diameter] · lathe (profile: [[radius,height],…]) · extrude (outline: [[x,y],…], depth) · group (children)',
-  '- color：#rrggbb 或 oak / walnut / black / white / brass / glass / ceramic / linen；可加 rough、metal（0–1）、opacity（水、玻璃）': '- color: #rrggbb or oak / walnut / black / white / brass / glass / ceramic / linen; optionally rough, metal (0–1), opacity (water, glass)',
-  '- 对称的腿用 mirror（x / z / xz），一排重复的用 repeat {count, step}': '- Use mirror (x / z / xz) for symmetric legs and repeat {count, step} for a row of identical parts',
-  '- 值得单独记忆的部分加 slot（英文编号）和 name（中文名）': '- Give parts worth remembering on their own a slot (English id) and a name (in English)',
-  '- 一般 5–40 个形体，最多 300 个': '- Usually 5–40 shapes, at most 300',
-  '你是室内陈设建模助手。用户拍了一件家具或物品，请把它变成 3D 记忆宫殿里的一个物件。': 'You are an interior modeling assistant. The user photographed a piece of furniture or an object; turn it into an item in a 3D memory palace.',
-  '优先从下面的目录里选最接近的类型，按照片调整参数：尺寸按真实世界估计（米），颜色尽量贴近照片（可以写 #rrggbb）。': 'Prefer the closest type from the catalog below and adjust its parameters to the photo: estimate real-world sizes (meters) and match the colors of the photo as closely as possible (#rrggbb is allowed).',
-  '目录里确实没有合适的类型时，才用积木（type 为 blocks）拼出来，抓住轮廓和主要颜色即可。': 'Only if the catalog really has nothing suitable, build it from shapes (type "blocks"), capturing the outline and the main colors.',
-  '只输出一个 JSON 对象，不要解释、不要 Markdown：': 'Output a single JSON object only, with no explanation and no Markdown:',
-  '{"name":"中文名（10 字以内）","type":"目录里的类型","params":{参数}}': '{"name":"short English name (max 20 characters)","type":"a type from the catalog","params":{...}}',
-  '目录（类型：名称 · 参数）：': 'Catalog (type: name · parameters):',
-  '这是我的{hint}，请识别。': 'This is my {hint}. Please identify it.',
-  '请识别照片里的主要物件。': 'Identify the main object in the photo.',
-
-  // ---------------- 拍照识物：解析 ----------------
-  '模型没有返回物件描述': 'The model didn’t return an item description',
-  '模型返回的物件描述不完整': 'The item description from the model is incomplete',
-  '「{label}」的值 {v} 不在可选范围内，用了默认值': '“{label}” value {v} isn’t one of the options; used the default',
-  '「{label}」{n} 超出范围，调成了 {c}': '“{label}” {n} is out of range; changed to {c}',
-  '模型返回的不是物件描述': 'The model’s answer isn’t an item description',
-  '模型给的积木是空的': 'The model returned empty shapes',
-  '目录里没有「{type}」这种物件': 'The catalog has no item type “{type}”',
-
-  // ---------------- 大模型接口 ----------------
-  '还没有填写模型接口的 API Key（应用设置）': 'No API key set for the AI model yet (app settings)',
-  '接口返回的不是 JSON：': 'The API didn’t return JSON: ',
 };

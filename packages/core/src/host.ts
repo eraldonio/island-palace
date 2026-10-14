@@ -7,21 +7,6 @@ export interface Prefs {
   set(key: string, value: string): void;
 }
 
-/** 多模态消息里的一段：文字或图片（data URL），与 OpenAI 的格式一致 */
-export type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
-
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string | ContentPart[] }
-
-/**
- * 大模型（用户自己的 Key，或宿主内置的 AI）：拍照识物。
- * 调用失败时抛出可以直接展示给用户的错误信息。
- */
-export interface AiAdapter {
-  chat(messages: ChatMessage[], opts?: { temperature?: number }): Promise<string>;
-  /** 当前的模型能不能看图（拍照识物；消息里带图片时 chat 会发给支持图片的模型） */
-  visionEnabled?(): boolean;
-}
-
 /**
  * 宿主适配器：core 只通过这个接口与宿主交互。
  * 所有方法都是可选的，缺失时对应的 UI 会自动隐藏。
@@ -50,8 +35,4 @@ export interface HostAdapter {
   saveMedia?(data: Blob, id: string): Promise<void>;
   /** 读取媒体，返回可以直接用作 <img src> 的地址 */
   loadMedia?(id: string): Promise<string>;
-  /** 大模型：拍照识物 */
-  ai?: AiAdapter;
-  /** 打开应用设置（配置大模型） */
-  openSettings?(): void;
 }

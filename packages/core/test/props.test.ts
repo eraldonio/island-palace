@@ -249,4 +249,31 @@ describe('摆设批次：重建时旧批次会被摘掉', () => {
       expect(layer!.land.children.length).toBe(stable);
     }
   });
+
+  it('重置岛屿风景：清除烘焙摆设并重新生成自然风景', () => {
+    const K = createKit({ maxAniso: 1 });
+    const world = new WorldLayer(K, createCatalog(K, 2.8));
+    const doc = createFromTemplate('cottage', 'ResetIslandDoc');
+    const region: WorldRegion = {
+      ...makeRegion('island'),
+      palaces: [{ palaceId: doc.id, pos: [0, 0], rot: 0 }],
+      props: [{ id: 'p1', kind: 'fountain', pos: [5, 5] }],
+    };
+    const docs = new Map([[doc.id, doc]]);
+    world.addRegion(region, docs);
+    const layer = world.regions.get(region.id);
+    expect(layer).toBeTruthy();
+    expect(region.props).toBeDefined();
+
+    // 模拟重置风景：删除 props，改变 seed，并重建土地
+    const oldSeed = region.seed;
+    delete region.props;
+    region.seed = 99999;
+    expect(region.props).toBeUndefined();
+    expect(region.seed).not.toBe(oldSeed);
+
+    world.rebuildLand(region.id, docs);
+    expect(decorBatches(layer!)).toBe(1);
+    expect(world.propBox(region.id, 'p1')).toBeNull();
+  });
 });

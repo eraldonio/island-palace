@@ -82,7 +82,7 @@ export interface Preset {
   y?: number;
 }
 
-// ---------------- 积木示例（也是给大模型看的格式样例） ----------------
+// ---------------- 积木示例（也是格式样例） ----------------
 const SAMPLE_CLOCK: PartSpec[] = [
   { shape: 'box', size: [.5, 1.8, .3], pos: [0, 1, 0], color: 'walnut', round: .015 },
   { shape: 'box', size: [.56, .1, .34], pos: [0, .05, 0], color: 'walnutDark', round: .01 },
@@ -808,7 +808,7 @@ export function createCatalog(K: Kit, wallH = 2.8) {
     return g;
   }
 
-  // ---------------- 积木（大模型看图生成，或手写 JSON）与导入的 3D 模型 ----------------
+  // ---------------- 积木（手写 JSON）与导入的 3D 模型 ----------------
   const partMats = new Map<string, THREE.Material>();
   function partMat(p: PartSpec): THREE.Material {
     const c = p.color || '#b8a48c';
@@ -878,7 +878,7 @@ export function createCatalog(K: Kit, wallH = 2.8) {
     for (const p of sanitizeParts(parts).parts) buildPart(inner, p);
     inner.scale.setScalar(scale);
     g.add(inner);
-    // 落地、左右前后居中：大模型给的坐标原点在哪都行
+    // 落地、左右前后居中：积木给的坐标原点在哪都行
     inner.updateMatrixWorld(true);
     const bb = new THREE.Box3().setFromObject(inner);
     if (!bb.isEmpty()) inner.position.set(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);

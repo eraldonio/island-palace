@@ -6,6 +6,6 @@ import { view } from './view';
 import { town } from './town';
 import { notes } from './notes';
 import { social } from './social';
-import { plugins } from './plugins';
 
-export const EN: Record<string, string> = Object.assign({}, common, catalog, content, view, town, notes, social, plugins);
+export const EN: Record<string, string> = Object.assign({}, common, catalog, content, view, town, notes, social);
+

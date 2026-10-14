@@ -85,6 +85,7 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-root canvas[data-kp-cursor="pointer"] { cursor: pointer; }
 .kp-root canvas[data-kp-cursor="grab"] { cursor: grab; }
 .kp-root canvas[data-kp-cursor="grabbing"] { cursor: grabbing; }
+.kp-root canvas[data-kp-cursor="crosshair"] { cursor: crosshair; }
 .kp-root .kp-behind { visibility: hidden; }
 .kp-loading { position: absolute; inset: 0; display: grid; place-items: center; background: #efe7dc; color: #7a6d60; font-size: 13px; letter-spacing: .2em; transition: opacity .8s ease; z-index: 6; }
 .kp-loading.kp-done { opacity: 0; pointer-events: none; }
@@ -112,7 +113,9 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-edit-hint b { color: var(--kp-ink); font-weight: 600; }
 .kp-place { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); align-items: center; gap: 12px; padding: 7px 7px 7px 16px; border-radius: 16px; font-size: 12.5px; white-space: nowrap; max-width: calc(100% - 24px); }
 .kp-place span { overflow: hidden; text-overflow: ellipsis; }
-.kp-root .kp-place button { padding: 8px 13px; border-radius: 11px; background: rgba(127, 110, 90, .15); font-size: 13px; }
+.kp-root .kp-place button { padding: 8px 13px; border-radius: 11px; background: rgba(127, 110, 90, .15); font-size: 13px; cursor: pointer; }
+.kp-root .kp-place .kp-seg button { padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.kp-root .kp-place .kp-seg button.kp-on { background: var(--kp-primary-bg); color: var(--kp-primary-fg); }
 
 .kp-drawer { position: absolute; right: 14px; top: 12px; bottom: 72px; width: 316px; border-radius: 18px; display: flex; flex-direction: column; overflow: hidden; z-index: 3; }
 .kp-drawer.kp-hidden { display: none; }
@@ -142,6 +145,14 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-night .kp-field select { background: rgba(255, 255, 255, .08); }
 .kp-field input[type=range] { width: 100%; accent-color: var(--kp-accent); margin: 0; }
 .kp-field output { font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; color: var(--kp-ink); }
+.kp-field output.kp-param-val { cursor: pointer; border-radius: 4px; padding: 1px 3px; margin: -1px -3px; }
+.kp-field output.kp-param-val:hover { background: rgba(127, 110, 90, .14); }
+.kp-field output.kp-param-val.kp-editing { background: rgba(255, 255, 255, .7); outline: 1px solid var(--kp-accent); cursor: text; user-select: text; -webkit-user-select: text; }
+.kp-night .kp-field output.kp-param-val.kp-editing { background: rgba(255, 255, 255, .15); }
+.kp-field input.kp-param-num { font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; width: 54px; text-align: right; color: var(--kp-ink); background: rgba(255, 255, 255, .55); border: 1px solid rgba(127, 110, 90, .25); border-radius: 6px; padding: 2px 4px; outline: none; }
+.kp-field input.kp-param-num:focus { border-color: var(--kp-accent); background: rgba(255, 255, 255, .85); }
+.kp-night .kp-field input.kp-param-num { background: rgba(255, 255, 255, .08); }
+.kp-night .kp-field input.kp-param-num:focus { background: rgba(255, 255, 255, .16); }
 
 @container kp (max-width: 760px) {
   .kp-root.kp-editing .kp-edit-hint.kp-edit-only { display: none !important; }

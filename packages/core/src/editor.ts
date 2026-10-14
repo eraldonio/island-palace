@@ -3,8 +3,7 @@ import type { PalaceView } from './view';
 import type { PalaceItem } from './schema';
 import { uid, subtree, itemPose, setItemPose } from './schema';
 import { materializeDecor } from './decor';
-import { pickImageFile, pickFile, compressImage, blobToDataUrl, storeMedia } from './media';
-import { recognizeMessages, parseRecognition } from './recognize';
+import { pickImageFile, pickFile, compressImage, storeMedia } from './media';
 import { sanitizeParts, countParts } from './blocks';
 import { CATEGORIES, PRESETS, isHexColor, type ParamSpec, type Preset } from './catalog';
 import { spawnItem, despawnItem, placeItem, roomAt, itemDisplayName, ownBox } from './build';
@@ -81,7 +80,7 @@ export class Editor {
   private grid: THREE.GridHelper | null = null;
   private thumbs: ThumbnailRenderer | null = null;
   private category = CATEGORIES[0];
-  /** 拍照识物 / 导入模型进行中的提示 */
+  /** 导入模型进行中的提示 */
   private busy = '';
   /** 卡片里正在编辑积木 JSON */
   private editingBlocks = false;
@@ -388,27 +387,6 @@ export class Editor {
     if (!this.v.ui.drawer.classList.contains('kp-hidden')) this.renderDrawer();
   }
 
-  /** 拍照识物：视觉模型看照片，给出目录类型 + 参数（或积木），然后进入放置 */
-  private async recognizePhoto() {
-    const ai = this.v.host.ai;
-    if (!ai?.visionEnabled?.() || this.busy) return;
-    const file = await pickImageFile();
-    if (!file) return;
-    this.setBusy(t('正在识别照片…'));
-    try {
-      const { blob } = await compressImage(file, 768, .8);
-      const url = await blobToDataUrl(blob);
-      const text = await ai.chat(recognizeMessages(this.v.catalog, url), { temperature: .2 });
-      const r = parseRecognition(text, this.v.catalog);
-      this.setBusy('');
-      this.startPlacing({ id: 'photo:' + r.type, type: r.type, name: r.name, category: '', params: r.params, y: this.v.catalog[r.type]?.mount === 'wall' ? 1.5 : undefined });
-      this.v.host.notify?.(t(r.type === 'blocks' ? '识别为「{name}」（用积木拼的），单击放下' : '识别为「{name}」，单击放下', { name: t(r.name) }) + (r.warnings.length ? t('；') + r.warnings[0] : ''));
-    } catch (e) {
-      this.setBusy('');
-      this.v.host.notify?.(t('没能识别：{msg}', { msg: String((e as Error)?.message || e) }), 'error');
-    }
-  }
-
   /** 导入 glb 模型（replace：替换选中模型物件的文件） */
   private async importModel(replace = false) {
     const host = this.v.host;
@@ -692,7 +670,7 @@ export class Editor {
     return Math.max(s.x, s.z) < .9;
   }
 
-  /** 开始放置：目录里的预设（id），或拍照识物 / 导入模型得到的物件描述 */
+  /** 开始放置：目录里的预设（id），或导入模型得到的物件描述 */
   startPlacing(presetOrId: string | Preset) {
     const preset = typeof presetOrId === 'string' ? PRESETS.find(p => p.id === presetOrId) : presetOrId;
     const b = this.v.built;
@@ -836,7 +814,6 @@ export class Editor {
       case 'dupItem': this.duplicateSelected(); return true;
       case 'delItem': this.deleteSelected(); return true;
       case 'pickPhoto': void this.pickPhoto(); return true;
-      case 'recognize': void this.recognizePhoto(); return true;
       case 'importModel': void this.importModel(); return true;
       case 'replaceModel': void this.importModel(true); return true;
       case 'editBlocks': this.editingBlocks = true; this.renderCard(this.v.selected); return true;
@@ -928,7 +905,6 @@ export class Editor {
     const presets = PRESETS.filter(p => p.category === this.category && this.v.catalog[p.type]);
     d.replaceChildren(html`
       <div class="kp-drawer-head"><b>${t('添加物件')}</b>
-        ${this.v.host.ai?.visionEnabled?.() ? html`<button class="kp-drawer-tool" data-act="recognize"${this.busy ? ' disabled' : ''} title="${t('拍一张家具或物品的照片，让模型把它变成宫殿里的物件')}">📷 ${t('拍照识物')}</button>` : ''}
         ${this.v.host.saveMedia ? html`<button class="kp-drawer-tool" data-act="importModel"${this.busy ? ' disabled' : ''} title="${t('导入 .glb 格式的 3D 模型')}">${t('导入 .glb')}</button>` : ''}
         <button class="kp-close" data-act="closeDrawer">×</button></div>
       ${this.busy ? html`<div class="kp-drawer-status">${this.busy}</div>` : ''}
