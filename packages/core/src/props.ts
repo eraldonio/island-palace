@@ -48,6 +48,31 @@ const LEAF_TONES: [number, string][] = [[LEAF.leaf, '深绿'], [LEAF.leafLight, 
 const leafMat = (ctx: ThemeCtx, i: number) => ctx.K.M[LEAF_NAMES[((Math.round(i) % LEAF_NAMES.length) + LEAF_NAMES.length) % LEAF_NAMES.length]];
 
 /**
+ * 取主题材质；这个主题没有就按后面的名字依次退回。
+ * 有些材质只有某一个主题才有（池塘是森林的、浮冰和雪山是雪山的、云和瀑布是浮空岛的），
+ * 而缩略图把四个主题的材质合在一起用——所以缺材质在预览里看不出来，只有摆到岛上才会暴露成
+ * three 的默认白材质（整块摆设变成一片白）。这里最后兜底到岩石色。
+ */
+function themeMat(ctx: ThemeCtx, ...names: string[]): THREE.Material {
+  const shared = ctx.K.M as unknown as Record<string, THREE.Material>;
+  for (const n of names) {
+    const m = ctx.mats[n] || shared[n];
+    if (m) return m;
+  }
+  return shared.stone;
+}
+
+/** 顶点色岩石（雪山摆到别的主題上时用）：山顶的雪线画在几何顶点色里，退回的材质也要开 vertexColors */
+const vColorRocks = new WeakMap<object, THREE.MeshStandardMaterial>();
+function vertexRockMat(ctx: ThemeCtx): THREE.MeshStandardMaterial {
+  const hit = vColorRocks.get(ctx.K);
+  if (hit) return hit;
+  const m = ctx.K.std('#ffffff', .95, 0, { flatShading: true, vertexColors: true });
+  vColorRocks.set(ctx.K, m);
+  return m;
+}
+
+/**
  * 整体抬高 y 米（广场家具坐在铺装上、云飘在不同高度、热气球 4 米高……）。
  * 抬高量放在内层节点上，返回的根节点 y 恒为 0（= 草地）。
  * 摆放方按「y = GRASS_Y + 根节点 y」落位（placer 和 world-layer 的 placeProps 都是），
@@ -441,7 +466,7 @@ const KINDS: PropKind[] = [
     params: [pnum('s', '大小', .3, .9, .05, .6)],
     build(ctx, p) {
       const s = num(p.s, .6);
-      const d = ctx.K.mesh(new THREE.SphereGeometry(s, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), ctx.mats.floe);
+      const d = ctx.K.mesh(new THREE.SphereGeometry(s, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), themeMat(ctx, 'floe', 'snowCap'));
       d.position.y = -.02; d.scale.set(1.4, .45, 1);
       const g = new THREE.Group();
       g.add(d);
@@ -455,7 +480,7 @@ const KINDS: PropKind[] = [
       // 浮冰的棱角是顶点抖动出来的，用 params.seed 定住
       seed(num(p.seed, 1));
       const s = num(p.s, 1.4);
-      const f = ctx.K.mesh(jitter(new THREE.CylinderGeometry(s, s * 1.08, .3, 6), s * .12), ctx.mats.floe);
+      const f = ctx.K.mesh(jitter(new THREE.CylinderGeometry(s, s * 1.08, .3, 6), s * .12), themeMat(ctx, 'floe', 'snowCap'));
       f.position.y = ctx.seaY - GRASS_Y + .06;
       const g = new THREE.Group();
       g.add(f);
@@ -468,20 +493,20 @@ const KINDS: PropKind[] = [
     build(ctx, p) {
       // 卵石 / 睡莲的位置是随机的，用 params.seed 定住
       seed(num(p.seed, 1));
-      const { K, mats } = ctx;
+      const { K } = ctx;
       const r = num(p.r, 3);
       const g = new THREE.Group();
-      const water = K.mesh(new THREE.CylinderGeometry(r, r, .06, 40), mats.pond, false);
+      const water = K.mesh(new THREE.CylinderGeometry(r, r, .06, 40), themeMat(ctx, 'pond', 'fountain'), false);
       water.position.y = .01; water.scale.z = .75; g.add(water);
       for (let i = 0; i < 16; i++) {
         const a = i / 16 * Math.PI * 2, s = rr(.18, .32);
-        const m = K.mesh(jitter(new THREE.DodecahedronGeometry(s, 0), .04), mats.pebble);
+        const m = K.mesh(jitter(new THREE.DodecahedronGeometry(s, 0), .04), themeMat(ctx, 'pebble', 'rock'));
         m.position.set(Math.cos(a) * r * 1.03, .06, Math.sin(a) * r * .78); m.scale.y = .55;
         g.add(m);
       }
       for (let i = 0; i < 6; i++) {
         const a = rr(0, Math.PI * 2), d = rr(.3, .75) * r;
-        const pad = K.mesh(new THREE.CylinderGeometry(rr(.22, .34), rr(.22, .34), .02, 12, 1, false, .3, Math.PI * 1.8), mats.lily, false);
+        const pad = K.mesh(new THREE.CylinderGeometry(rr(.22, .34), rr(.22, .34), .02, 12, 1, false, .3, Math.PI * 1.8), themeMat(ctx, 'lily', 'leafFlat'), false);
         pad.position.set(Math.cos(a) * d, .05, Math.sin(a) * d * .75); g.add(pad);
       }
       return g;
@@ -505,7 +530,7 @@ const KINDS: PropKind[] = [
         }
         geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         geo.computeVertexNormals();
-        const m = K.mesh(geo, mats.mountain);
+        const m = K.mesh(geo, mats.mountain || vertexRockMat(ctx));
         m.position.set(px, h / 2 - .3, pz); m.rotation.y = rr(0, 1);
         g.add(m);
       };
@@ -520,12 +545,12 @@ const KINDS: PropKind[] = [
     build(ctx, p) {
       // 一团云由几块球组成，块的位置用 params.seed 定住
       seed(num(p.seed, 1));
-      const { K, mats } = ctx;
+      const { K } = ctx;
       const n = num(p.n, 4);
       const g = new THREE.Group();
       for (let k = 0; k < n; k++) {
         const s = rr(1.1, 2.2);
-        const m = K.mesh(new THREE.IcosahedronGeometry(s, 1), mats.cloud, false);
+        const m = K.mesh(new THREE.IcosahedronGeometry(s, 1), themeMat(ctx, 'cloud', 'white'), false);
         m.position.set(rr(-2, 2), rr(-.3, .5), rr(-1.4, 1.4)); m.scale.y = .62;
         g.add(m);
       }
@@ -558,25 +583,25 @@ const KINDS: PropKind[] = [
     build(ctx, p) {
       // 水雾的位置是随机的，用 params.seed 定住；小溪 / 水潭的位置由 params.angle / len 决定
       seed(num(p.seed, 1));
-      const { K, mats } = ctx;
+      const { K } = ctx;
       const a = num(p.angle), len = num(p.len, 8);
       const ux = Math.cos(a), uz = Math.sin(a), rot = Math.atan2(ux, uz);
       const g = new THREE.Group();
-      const stream = K.mesh(new THREE.BoxGeometry(1.3, .05, len + .8), mats.stream, false);
+      const stream = K.mesh(new THREE.BoxGeometry(1.3, .05, len + .8), themeMat(ctx, 'stream', 'fountain'), false);
       stream.position.set(-ux * len / 2, .02, -uz * len / 2); stream.rotation.y = rot; g.add(stream);
       const pondR = 1.5;
-      const pond = K.mesh(new THREE.CylinderGeometry(pondR, pondR, .05, 24), mats.stream, false);
+      const pond = K.mesh(new THREE.CylinderGeometry(pondR, pondR, .05, 24), themeMat(ctx, 'stream', 'fountain'), false);
       pond.position.set(-ux * len, .02, -uz * len); g.add(pond);
       const drop = GRASS_Y - ctx.seaY;
       for (const [w, off] of [[1.5, .7], [1.0, .9]] as [number, number][]) {
-        const fall = new THREE.Mesh(new THREE.PlaneGeometry(w, drop), mats.fall);
+        const fall = new THREE.Mesh(new THREE.PlaneGeometry(w, drop), themeMat(ctx, 'fall', 'fountain'));
         fall.position.set(ux * off, -drop / 2, uz * off);
         fall.rotation.y = rot + Math.PI / 2;
         fall.renderOrder = 2;
         g.add(fall);
       }
       for (let i = 0; i < 7; i++) {
-        const m = K.mesh(new THREE.IcosahedronGeometry(rr(.6, 1.2), 1), mats.cloud, false);
+        const m = K.mesh(new THREE.IcosahedronGeometry(rr(.6, 1.2), 1), themeMat(ctx, 'cloud', 'white'), false);
         m.position.set(ux + rr(-1.2, 1.2), ctx.seaY - GRASS_Y + rr(.2, .9), uz + rr(-1.2, 1.2));
         g.add(m);
       }
@@ -663,12 +688,12 @@ const KINDS: PropKind[] = [
   {
     kind: 'igloo', name: '冰屋', category: '户外', landmark: true, blocker: 2.6,
     build(ctx, p) {
-      const { K, mats } = ctx;
+      const { K } = ctx;
       const g = new THREE.Group();
-      const dome = K.mesh(new THREE.SphereGeometry(1.6, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), mats.floe); g.add(dome);
-      const tunnel = K.mesh(new THREE.CylinderGeometry(.7, .7, 1.4, 14, 1, false, -Math.PI / 2, Math.PI), mats.floe);
+      const dome = K.mesh(new THREE.SphereGeometry(1.6, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), themeMat(ctx, 'floe', 'snowCap')); g.add(dome);
+      const tunnel = K.mesh(new THREE.CylinderGeometry(.7, .7, 1.4, 14, 1, false, -Math.PI / 2, Math.PI), themeMat(ctx, 'floe', 'snowCap'));
       tunnel.rotation.x = Math.PI / 2; tunnel.position.set(0, 0, 1.6); g.add(tunnel);
-      const door = K.mesh(new THREE.CircleGeometry(.5, 14, 0, Math.PI), mats.coal, false);
+      const door = K.mesh(new THREE.CircleGeometry(.5, 14, 0, Math.PI), themeMat(ctx, 'coal', 'charcoal'), false);
       door.position.set(0, .01, 2.31); g.add(door);
       return g;
     },
@@ -676,13 +701,13 @@ const KINDS: PropKind[] = [
   {
     kind: 'snowman', name: '雪人', category: '户外',
     build(ctx, p) {
-      const { K, mats } = ctx;
+      const { K } = ctx;
       const g = new THREE.Group();
-      const ball = (r: number, y: number) => { const m = K.mesh(new THREE.SphereGeometry(r, 16, 12), mats.floe); m.position.y = y; g.add(m); };
+      const ball = (r: number, y: number) => { const m = K.mesh(new THREE.SphereGeometry(r, 16, 12), themeMat(ctx, 'floe', 'snowCap')); m.position.y = y; g.add(m); };
       ball(.42, .38); ball(.3, .98); ball(.21, 1.42);
-      const nose = K.mesh(new THREE.ConeGeometry(.05, .26, 8), mats.carrot); nose.rotation.x = Math.PI / 2; nose.position.set(0, 1.43, .3); g.add(nose);
-      for (const s of [-1, 1]) { const e = K.mesh(new THREE.SphereGeometry(.028, 8, 6), mats.coal); e.position.set(s * .07, 1.5, .18); g.add(e); }
-      const scarf = K.mesh(new THREE.TorusGeometry(.22, .05, 6, 18), mats.scarf); scarf.rotation.x = Math.PI / 2; scarf.position.y = 1.23; g.add(scarf);
+      const nose = K.mesh(new THREE.ConeGeometry(.05, .26, 8), themeMat(ctx, 'carrot', 'fruitO')); nose.rotation.x = Math.PI / 2; nose.position.set(0, 1.43, .3); g.add(nose);
+      for (const s of [-1, 1]) { const e = K.mesh(new THREE.SphereGeometry(.028, 8, 6), themeMat(ctx, 'coal', 'charcoal')); e.position.set(s * .07, 1.5, .18); g.add(e); }
+      const scarf = K.mesh(new THREE.TorusGeometry(.22, .05, 6, 18), themeMat(ctx, 'scarf', 'red')); scarf.rotation.x = Math.PI / 2; scarf.position.y = 1.23; g.add(scarf);
       return lifted(g, PAVE_Y);
     },
   },
@@ -691,9 +716,9 @@ const KINDS: PropKind[] = [
     build(ctx, p) {
       const { K, mats } = ctx;
       const g = new THREE.Group();
-      const env = K.mesh(new THREE.SphereGeometry(1.7, 20, 14), mats.balloon); env.scale.y = 1.18; env.position.y = 3.2; g.add(env);
-      const band = K.mesh(new THREE.TorusGeometry(1.66, .12, 8, 28), mats.balloonBand); band.rotation.x = Math.PI / 2; band.position.y = 3.1; g.add(band);
-      const neck = K.mesh(new THREE.ConeGeometry(.7, .9, 14), mats.balloon); neck.rotation.x = Math.PI; neck.position.y = 1.35; g.add(neck);
+      const env = K.mesh(new THREE.SphereGeometry(1.7, 20, 14), themeMat(ctx, 'balloon', 'mustard')); env.scale.y = 1.18; env.position.y = 3.2; g.add(env);
+      const band = K.mesh(new THREE.TorusGeometry(1.66, .12, 8, 28), themeMat(ctx, 'balloonBand', 'red')); band.rotation.x = Math.PI / 2; band.position.y = 3.1; g.add(band);
+      const neck = K.mesh(new THREE.ConeGeometry(.7, .9, 14), themeMat(ctx, 'balloon', 'mustard')); neck.rotation.x = Math.PI; neck.position.y = 1.35; g.add(neck);
       const basket = K.mesh(new THREE.BoxGeometry(.7, .5, .7), mats.wood); basket.position.y = .25; g.add(basket);
       for (const [dx, dz] of [[-.3, -.3], [.3, -.3], [-.3, .3], [.3, .3]]) {
         const rope = K.mesh(new THREE.CylinderGeometry(.015, .015, 1.1, 4), mats.dark, false); rope.position.set(dx, .95, dz); g.add(rope);

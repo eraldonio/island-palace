@@ -637,6 +637,12 @@ export class Editor {
       }
     } else {
       this.follow(e, d.item, d.obj, d);
+      // 空中物理悬浮与跟随：根据未吸附的地面交点提供自然平滑与侧倾
+      const rawG = this.planeHit(e, 0);
+      if (rawG) {
+        const rawTarget = new THREE.Vector3(rawG.x + d.offset.x, d.obj.position.y, rawG.z + d.offset.z);
+        this.v.spawnFx.updateDrag(d.obj, d.obj.position, rawTarget, d.obj.rotation.y, 0.12);
+      }
     }
     this.v.setCursor('grabbing');
     this.afterTransform();
@@ -660,6 +666,7 @@ export class Editor {
     this.drag = null;
     this.v.setCursor('');
     if (d.moved) {
+      this.v.spawnFx.endDrag(d.obj);
       const p = itemPose(this.v.doc.items, d.item).pos;
       d.item.room = roomAt(this.v.doc, p[0], p[2])?.id ?? d.item.room;
       this.commit(d.before);
@@ -667,6 +674,8 @@ export class Editor {
       const s = ownBox(d.obj).getSize(new THREE.Vector3());
       const weight = Math.max(0.7, (s.x * s.y * s.z) ** (1 / 3));
       this.v.spawnFx.dropImpact(d.obj, undefined, weight);
+    } else {
+      this.v.spawnFx.endDrag(d.obj);
     }
     return true;
   }

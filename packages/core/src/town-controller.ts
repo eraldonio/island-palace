@@ -30,6 +30,7 @@ const PROP_GAP = .6;
 const NOTE_GRID = .05;
 const snapNote = (n: number) => Math.round(n / NOTE_GRID) * NOTE_GRID;
 const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const DEG = Math.PI / 180;
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
 
@@ -2522,6 +2523,11 @@ export class TownController {
         this.updateMarker(d.valid);
         this.v.invalidate();
       }
+      const holder = this.town.noteHolder(d.regionId, d.noteId);
+      if (holder) {
+        const rawTarget = new THREE.Vector3(ng[0] + d.offset[0], holder.position.y, ng[1] + d.offset[1]);
+        this.v.spawnFx.updateDrag(holder, holder.position, rawTarget, (note.rot || 0) * DEG, 0.08);
+      }
       return true;
     }
     if (d.kind === 'prop') {
@@ -2537,6 +2543,11 @@ export class TownController {
         d.moved = true;
         this.updateMarker(d.valid);
         this.v.invalidate();
+      }
+      const propObj = this.town.propObj(d.regionId, d.propId);
+      if (propObj) {
+        const rawTarget = new THREE.Vector3(pg[0] + d.offset[0], propObj.position.y, pg[1] + d.offset[1]);
+        this.v.spawnFx.updateDrag(propObj, propObj.position, rawTarget, prop.rot || 0, 0.12);
       }
       return true;
     }
@@ -2554,6 +2565,11 @@ export class TownController {
           prop.pos = next;
           this.town.movePropPreview(d.regionId, pid, next, prop.rot || 0);
           if (!layer.onLand(next[0], next[1], 0.2)) allValid = false;
+          const propObj = this.town.propObj(d.regionId, pid);
+          if (propObj) {
+            const rawTarget = new THREE.Vector3(g[0] + offset[0], propObj.position.y, g[1] + offset[1]);
+            this.v.spawnFx.updateDrag(propObj, propObj.position, rawTarget, prop.rot || 0, 0.12);
+          }
         }
       }
       for (const [nid, offset] of d.noteOffsets) {
@@ -2563,6 +2579,11 @@ export class TownController {
           note.pos = next;
           this.town.moveNotePreview(d.regionId, nid, next, note.rot || 0);
           if (!layer.onLand(next[0], next[1], 1.2)) allValid = false;
+          const holder = this.town.noteHolder(d.regionId, nid);
+          if (holder) {
+            const rawTarget = new THREE.Vector3(g[0] + offset[0], holder.position.y, g[1] + offset[1]);
+            this.v.spawnFx.updateDrag(holder, holder.position, rawTarget, (note.rot || 0) * DEG, 0.08);
+          }
         }
       }
       d.valid = allValid;
@@ -2581,6 +2602,8 @@ export class TownController {
       this.updateMarker(d.valid);
       this.v.invalidate();
     }
+    const rawTarget = new THREE.Vector3(g[0] + d.offset[0], s.group.position.y, g[1] + d.offset[1]);
+    this.v.spawnFx.updateDrag(s.group, s.group.position, rawTarget, s.placed.rot * DEG, 0.15);
     return true;
   }
 
@@ -2673,11 +2696,12 @@ export class TownController {
     if (d.kind === 'note') {
       const region = this.regionById(d.regionId);
       const note = region && W.findNote(region, d.noteId);
+      const holder = this.town.noteHolder(d.regionId, d.noteId);
+      if (holder) this.v.spawnFx.endDrag(holder);
       if (note && region && d.moved) {
         if (d.valid) {
           this.pushUndo(d.before);
           this.v.worldChanged();
-          const holder = this.town.noteHolder(d.regionId, d.noteId);
           const box = this.town.noteBox(d.regionId, d.noteId);
           const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
           this.v.spawnFx.dropImpact(holder, center, 0.7);
@@ -2694,11 +2718,12 @@ export class TownController {
     if (d.kind === 'prop') {
       const region = this.regionById(d.regionId);
       const prop = region && W.findProp(region, d.propId);
+      const propObj = this.town.propObj(d.regionId, d.propId);
+      if (propObj) this.v.spawnFx.endDrag(propObj);
       if (prop && region && d.moved) {
         if (d.valid) {
           this.pushUndo(d.before);
           this.v.worldChanged();
-          const propObj = this.town.propObj(d.regionId, d.propId);
           const box = this.town.propBox(d.regionId, d.propId);
           const center = box ? box.getCenter(new THREE.Vector3()) : undefined;
           this.v.spawnFx.dropImpact(propObj, center, 1.1);
@@ -2714,6 +2739,14 @@ export class TownController {
     }
     if (d.kind === 'group') {
       const region = this.regionById(d.regionId);
+      for (const pid of d.propOffsets.keys()) {
+        const propObj = this.town.propObj(d.regionId, pid);
+        if (propObj) this.v.spawnFx.endDrag(propObj);
+      }
+      for (const nid of d.noteOffsets.keys()) {
+        const holder = this.town.noteHolder(d.regionId, nid);
+        if (holder) this.v.spawnFx.endDrag(holder);
+      }
       if (region && d.moved) {
         if (d.valid) {
           this.pushUndo(d.before);
@@ -2753,6 +2786,7 @@ export class TownController {
       return true;
     }
     const s = this.town.shells.get(d.id);
+    if (s) this.v.spawnFx.endDrag(s.group);
     if (s && d.moved) {
       if (d.valid) {
         this.commitPalaces(d.before, d.regionId);
