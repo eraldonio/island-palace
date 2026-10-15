@@ -30,12 +30,9 @@ const PROP_GAP = .6;
 const PROP_OUT = 30;
 /** 悬空高度的范围（米）：卡片滑杆和摆设顶上那支箭头共用 */
 const AIR_MIN = -3, AIR_MAX = 40;
-/** 拖高度箭头的手感：鼠标走 1 像素 = 0.4 像素的高度（1:1 对高度来说太跳了） */
-const AIR_GEAR = .4;
-/** 缩得很远时每米的像素数很小，给个下限，免得 1 像素换掉好几米 */
-const AIR_MIN_PPM = 12;
+
 /** 每个摆设都有的通用参数：离落位基准的高度（米）——云、热气球这类可以放到天上去 */
-const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: AIR_MIN, max: AIR_MAX, step: .1, def: 0 };
+const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: AIR_MIN, max: AIR_MAX, step: .05, def: 0 };
 /** 卡片上显示的参数：种类自己的 + 通用高度 */
 const propSpecs = (kind: PropKind | undefined): ParamSpec[] => [...(kind?.params || []), PROP_ALT];
 /** 便签吸附的网格（和编辑器里物件摆放一致：5 cm） */
@@ -1210,15 +1207,13 @@ export class TownController {
   }
 
   /**
-   * 拖箭头：屏幕上下 = 高度增减，但按 AIR_GEAR 放慢（1:1 对高度来说太跳了；按住 Shift 再细一倍）。
+   * 拖箭头：鼠标在屏幕上上移多少像素，物体和箭头在屏幕上也严格上移多少像素（精确 1:1 跟手）。
    * 实时改参数（rAF 合批重建），箭头自己先跟着抬起来，撤消在松手时记一次。
    */
   private moveAirDrag(e: PointerEvent) {
     const d = this.airDrag;
     if (!d) return;
-    const gear = e.shiftKey ? AIR_GEAR * .25 : AIR_GEAR;
-    const perMeter = Math.max(d.perMeter, AIR_MIN_PPM);
-    const next = Math.round(clampNum(d.air + (d.y - e.clientY) * gear / perMeter, AIR_MIN, AIR_MAX) * 50) / 50;
+    const next = Math.round(clampNum(d.air + (d.y - e.clientY) / d.perMeter, AIR_MIN, AIR_MAX) * 100) / 100;
     if (next === d.air) return;
     const step = next - d.air;
     d.air = next;
