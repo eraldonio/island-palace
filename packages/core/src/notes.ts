@@ -324,16 +324,21 @@ export function noteCorners(note: PlacedNote): [number, number][] {
 
 export interface NoteHit { noteId: string; point: THREE.Vector3 }
 
-interface NoteEntry { holder: THREE.Group; box: THREE.Box3; w: number; h: number; note: PlacedNote }
+/** 一张便签自己的 GPU 资源（贴图 / 材质 / 几何） */
+type NoteRes = THREE.Texture | THREE.Material | THREE.BufferGeometry;
+
+interface NoteEntry { holder: THREE.Group; box: THREE.Box3; w: number; h: number; note: PlacedNote; res: NoteRes[] }
 
 /**
  * 一座岛上的便签。每张便签是自己的网格（贴图各不相同，没法合批），
  * 挂在岛的 group 下（跟着岛移动）；拾取和选中标记都用一块扁扁的 AABB，和摆设一致。
+ *
+ * 资源归每张便签自己：改尺寸是每帧 rebuild（内容 / 纸色 / 尺寸一变就走），
+ * 所以旧贴图必须当次就释放——攒在图层里等整层销毁的话，拖一次四角就攒下几十张贴图。
  */
 export class NoteLayer {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, NoteEntry>();
-  private readonly owned: (THREE.Texture | THREE.Material | THREE.BufferGeometry)[] = [];
 
   constructor(private readonly K: Kit) {
     this.group.name = 'notes';
@@ -386,8 +391,7 @@ export class NoteLayer {
     holder.position.set(note.pos[0], GRASS_Y + NOTE_LIFT, note.pos[1]);
     if (note.rot) holder.rotation.y = note.rot * DEG;
     this.group.add(holder);
-    this.owned.push(tex, mat, geo);
-    this.entries.set(note.id, { holder, w, h, note, box: this.boxAt(note.pos, note.rot || 0, w, h) });
+    this.entries.set(note.id, { holder, w, h, note, box: this.boxAt(note.pos, note.rot || 0, w, h), res: [tex, mat, geo] });
   }
 
   private remove(id: string) {
@@ -395,6 +399,7 @@ export class NoteLayer {
     if (!e) return;
     e.holder.removeFromParent();
     this.entries.delete(id);
+    for (const o of e.res) o.dispose();
   }
 
   /** 数据坐标下的扁包围盒（不贴到世界坐标）：拾取和拖动都照它走 */
@@ -440,10 +445,7 @@ export class NoteLayer {
   }
 
   clear() {
-    for (const e of this.entries.values()) e.holder.removeFromParent();
-    this.entries.clear();
-    for (const o of this.owned) o.dispose();
-    this.owned.length = 0;
+    for (const id of [...this.entries.keys()]) this.remove(id);
   }
 
   dispose() {

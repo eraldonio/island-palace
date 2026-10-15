@@ -8,6 +8,8 @@ export const notes: Record<string, string> = {
   '删除这张便签': 'Delete this note',
   '便签删除后无法撤销。': 'A deleted note cannot be restored.',
   '编辑便签': 'Edit note',
+  '已保存': 'Saved',
+  '保存中…': 'Saving…',
   '双击便签就能在世界上面直接写；拖四角改宽窄和深浅。': 'Double-click a note to write on it right in the world; drag its corners to change width and depth.',
   '写点什么…': 'Write something…',
   '便签': 'Note',
