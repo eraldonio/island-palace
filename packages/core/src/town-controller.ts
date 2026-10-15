@@ -133,7 +133,7 @@ export class TownController {
   sculptBrush: 'expand' | 'shrink' = 'expand';
   private sculptDrag: { regionId: string; mode: 'expand' | 'shrink'; before: string; lastApply: number } | null = null;
   /** 正在拖顶端那支箭头：把屏幕上的上下换算成悬空高度（米） */
-  private airDrag: { propId: string; air: number; y: number; perMeter: number } | null = null;
+  private airDrag: { propId: string; baseAir: number; startY: number; perMeter: number } | null = null;
   /** 箭头当前立在哪（拖高度时先把它跟着抬起来，参数重建要等下一帧） */
   private airAt: THREE.Vector3 | null = null;
   private paletteSel = 0;
@@ -1186,6 +1186,8 @@ export class TownController {
    * 拖顶上那支箭头时用它把像素换成米（同一个相机算一次就准，正交相机远近一样）。
    */
   private screenPerMeter(world: THREE.Vector3): number {
+    this.v.isoCam.updateMatrixWorld();
+    this.v.isoCam.updateProjectionMatrix();
     const cam = this.v.isoCam, rect = this.v.renderer.domElement.getBoundingClientRect();
     const a = world.clone().project(cam).y;
     const b = world.clone().add(new THREE.Vector3(0, 1, 0)).project(cam).y;
@@ -1200,7 +1202,7 @@ export class TownController {
     if (!v.pickAirGizmo(this.ray(e))) return false;
     const box = this.town.propBox(at.region.id, at.prop.id);
     const tip = box ? box.getCenter(new THREE.Vector3()).setY(box.max.y + .2) : new THREE.Vector3();
-    this.airDrag = { propId: at.prop.id, air: Number(at.prop.params?.air) || 0, y: e.clientY, perMeter: this.screenPerMeter(tip) };
+    this.airDrag = { propId: at.prop.id, baseAir: Number(at.prop.params?.air) || 0, startY: e.clientY, perMeter: this.screenPerMeter(tip) };
     try { v.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* 合成事件 */ }
     v.setCursor('ns-resize');
     return true;
@@ -1213,10 +1215,10 @@ export class TownController {
   private moveAirDrag(e: PointerEvent) {
     const d = this.airDrag;
     if (!d) return;
-    const next = Math.round(clampNum(d.air + (d.y - e.clientY) / d.perMeter, AIR_MIN, AIR_MAX) * 100) / 100;
-    if (next === d.air) return;
-    const step = next - d.air;
-    d.air = next;
+    const currentAir = Number(this.propAt(d.propId)?.prop.params?.air) || 0;
+    const next = Math.round(clampNum(d.baseAir + (d.startY - e.clientY) / d.perMeter, AIR_MIN, AIR_MAX) * 100) / 100;
+    if (next === currentAir) return;
+    const step = next - currentAir;
     this.setPropParam('air', next, true);
     // 参数重建要等下一帧（setPropParam 用 rAF 合批），这里先把箭头抬起来，拖起来才跟手
     if (this.airAt) { this.airAt = this.airAt.clone().setY(this.airAt.y + step); this.v.setAirGizmo(this.airAt); }
@@ -1229,7 +1231,8 @@ export class TownController {
     const d = this.airDrag;
     this.airDrag = null;
     if (!d) return;
-    this.setPropParam('air', d.air, false);   // 松手：合一次撤销
+    const finalAir = Number(this.propAt(d.propId)?.prop.params?.air) || d.baseAir;
+    this.setPropParam('air', finalAir, false);   // 松手：合一次撤销
     this.renderCard();
     this.updateMarker();
     this.v.setCursor('');
