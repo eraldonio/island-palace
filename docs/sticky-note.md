@@ -101,7 +101,7 @@ Grounded in the current structure of `packages/core`:
 | Concern | Module | Where it lives |
 | --- | --- | --- |
 | World data | `src/world.ts` | `PlacedNote` + `WorldRegion.notes`; `WORLD_VERSION` 5 (`WORLD_COMPAT` stays 1); `NOTE_NEW` / `NOTE_SIZE` / `NOTE_FS`; `normNotes` in `normalizeWorld`; `notesOf` / `findNote` / `addNote` / `removeNote` (mirrors the prop helpers). |
-| Content | `src/notes.ts` | The whole note module: `parseNote` / `serializeNote` / `sanitizeNoteHtml` (allowlist `p·br·b·strong·i·em·u·h1-3·ul·ol·li·a[href]`), `noteToDom` (in-place editor seed), `NOTE_COLORS` / `NOTE_INK`, `drawNote` (canvas), and `NoteLayer` (meshes / picking / move). |
+| Content | `src/notes.ts` | The whole note module: `parseNote` / `serializeNote` / `sanitizeNoteHtml` (allowlist `p·br·b·strong·i·em·u·h1-3·ul·ol·li·a[href]`), `noteToDom` (in-place editor seed), `NOTE_COLORS` / `NOTE_INK`, `drawNote` (canvas), `noteCanvasSize` (texture pixel budget), and `NoteLayer` (meshes / picking / move). |
 | Scene | `src/world-layer.ts` | `RegionLayer` owns a `NoteLayer` under its group; `rebuildNotes` / `pickNote` / `moveNote` / `noteBox`, mirrored on `WorldLayer` (`rebuildNotes` / `pickNote` / `moveNotePreview` / `noteBox`, `NotePick`). |
 | Region UI | `src/town-controller.ts` | The region-level owner (props live here too): the note tool (`noteAdd`), start/move/commit placing with 5 cm snap, selection + marker, drag/rotate/delete, the note card, the in-place editor, and the Quill modal (`quillFor` dynamic import). |
 | i18n | `src/i18n/en/notes.ts` | The English strings for the note UI; `pnpm -C packages/core i18n` and `i18n.test.ts` gate completeness. |
