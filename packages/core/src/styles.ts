@@ -86,6 +86,7 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-root canvas[data-kp-cursor="grab"] { cursor: grab; }
 .kp-root canvas[data-kp-cursor="grabbing"] { cursor: grabbing; }
 .kp-root canvas[data-kp-cursor="crosshair"] { cursor: crosshair; }
+.kp-root canvas[data-kp-cursor="ns-resize"] { cursor: ns-resize; }
 .kp-root .kp-behind { visibility: hidden; }
 .kp-loading { position: absolute; inset: 0; display: grid; place-items: center; background: #efe7dc; color: #7a6d60; font-size: 13px; letter-spacing: .2em; transition: opacity .8s ease; z-index: 6; }
 .kp-loading.kp-done { opacity: 0; pointer-events: none; }
@@ -426,10 +427,12 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 .kp-root .kp-pet-acc button.kp-on { background: var(--kp-accent); color: #fff; }
 .kp-route-sub small { font-weight: 400; color: var(--kp-ink-2); margin-left: 4px; }
 
-/* ── 便签：直接写在便签上的 DOM、四角的缩放句柄、富文本模态 ─────────── */
+/* ── 便签：直接写在便签上的 DOM、选中框与四角的缩放句柄、富文本模态 ─────────── */
 .kp-dot { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 6px; vertical-align: -1px; box-shadow: inset 0 0 0 1px rgba(60, 45, 25, .25); }
+/* 贴在纸面上的 DOM：压在画布之上，但低于卡片（2）/ 面板（3）/ 弹层（8）——
+   镜头里的东西不该盖住界面。 */
 .kp-note-live {
-  position: absolute; left: 0; top: 0; z-index: 30; transform-origin: 0 0; overflow: hidden;
+  position: absolute; left: 0; top: 0; z-index: 1; transform-origin: 0 0; overflow: hidden;
   color: #2b2b2b; line-height: 1.34; cursor: text;
 }
 .kp-note-live.kp-hidden { display: none; }
@@ -438,8 +441,11 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
   user-select: text; -webkit-user-select: text;
 }
 .kp-note-live-box a { color: #1a5fb4; }
-.kp-note-handles { position: absolute; inset: 0; z-index: 31; pointer-events: none; }
+.kp-note-handles { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 .kp-note-handles.kp-hidden { display: none; }
+/* 选中框：和便签同一个仿射矩阵，四条边压在纸面上；四个句柄就落在它的四个角 */
+.kp-note-frame { position: absolute; left: 0; top: 0; border: 1.5px solid var(--kp-accent); border-radius: 4px; pointer-events: none; }
+.kp-note-frame.kp-hidden { display: none; }
 .kp-note-handle {
   position: absolute; width: 13px; height: 13px; margin: -7px 0 0 -7px; border-radius: 4px;
   background: #fff; box-shadow: 0 0 0 1.5px var(--kp-accent), 0 1px 4px rgba(40, 25, 10, .3);
@@ -447,6 +453,7 @@ const CSS = /* i18n-ignore：只有 CSS 注释含中文 */ `
 }
 .kp-note-handle[data-corner="1"], .kp-note-handle[data-corner="2"] { cursor: nesw-resize; }
 .kp-note-modal { width: min(560px, 100%); max-height: 82vh; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; }
+.kp-note-saved { flex: 1; align-self: center; font-size: 11.5px; color: var(--kp-ink-2); }
 .kp-note-editor { min-height: 180px; max-height: 56vh; overflow: auto; background: #fffdf7; color: #2b2b2b; border-radius: 12px; }
 .kp-note-editor .ql-container { border: 0; font-size: 14px; font-family: inherit; }
 .kp-note-editor .ql-editor { min-height: 180px; }

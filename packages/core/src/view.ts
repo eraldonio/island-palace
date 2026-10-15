@@ -193,6 +193,10 @@ export class PalaceView {
   private marker = new THREE.Group();
   private markerLine = new THREE.MeshBasicMaterial({ color: '#ef8235', transparent: true, opacity: .9, depthWrite: false, toneMapped: false });
   private markerFill = new THREE.MeshBasicMaterial({ color: '#ef8235', transparent: true, opacity: .13, depthWrite: false, toneMapped: false });
+  /** 选中摆设时顶端那支箭头（拖动它改悬空高度）：不写深度，永远看得见 */
+  private airGizmo = new THREE.Group();
+  private airArrow = new THREE.MeshBasicMaterial({ color: '#ef8235', transparent: true, opacity: .95, depthTest: false, depthWrite: false, toneMapped: false });
+  private airHit = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false });
   private walk = {
     pos: new THREE.Vector3(), yaw: 0, pitch: 0, keys: new Set<string>(), bob: 0,
     drag: null as null | { id: number; x: number; y: number; moved: number },
@@ -282,6 +286,19 @@ export class PalaceView {
     this.marker.visible = false;
     this.marker.renderOrder = 10;
     this.scene.add(this.marker);
+
+    // 悬空高度箭头：一根杆 + 一个箭头 + 一根看不见的粗杆（给它一个好抓的命中区）
+    {
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, 1.5, 6), this.airArrow);
+      stem.position.y = .75;
+      const head = new THREE.Mesh(new THREE.ConeGeometry(.19, .44, 10), this.airArrow);
+      head.position.y = 1.72;
+      const hit = new THREE.Mesh(new THREE.CylinderGeometry(.55, .55, 2.5, 8), this.airHit);
+      hit.position.y = 1.1;
+      for (const m of [stem, head, hit]) { m.renderOrder = 12; this.airGizmo.add(m); }
+      this.airGizmo.visible = false;
+      this.scene.add(this.airGizmo);
+    }
     this.fx = new PlanetFx(this.scene);
 
     // ---------- 控制器 ----------
@@ -403,6 +420,8 @@ export class PalaceView {
     this.envRT.dispose();
     this.kit.dispose();
     this.markerLine.dispose(); this.markerFill.dispose();
+    this.airGizmo.traverse(o => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose(); });
+    this.airArrow.dispose(); this.airHit.dispose();
     this.slotOutline.geometry.dispose(); (this.slotOutline.material as THREE.Material).dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -1185,7 +1204,7 @@ export class PalaceView {
   }
 
   /** 画布上的鼠标样式（样式表里按 data-kp-cursor 设置） @internal */
-  setCursor(c: '' | 'pointer' | 'grab' | 'grabbing' | 'crosshair') {
+  setCursor(c: '' | 'pointer' | 'grab' | 'grabbing' | 'crosshair' | 'ns-resize') {
     this.renderer.domElement.dataset.kpCursor = c;
   }
 
@@ -1327,6 +1346,22 @@ export class PalaceView {
     marker.position.set(c.x, y, c.z);
     marker.visible = true;
     this.invalidate();
+  }
+
+  /**
+   * 选中摆设时顶端那支「悬空高度」箭头：base 是箭头的立足点（摆设包围盒的顶面），
+   * 传 null 就收起来。拖它上下移动摆设（换算见 town-controller 的 screenPerMeter）。
+   * @internal
+   */
+  setAirGizmo(base: THREE.Vector3 | null) {
+    const on = !!base;
+    if (base) this.airGizmo.position.copy(base);
+    if (this.airGizmo.visible !== on) { this.airGizmo.visible = on; this.invalidate(); }
+  }
+
+  /** 指针指到箭头了没（pointerdown / 悬停都先问一下） @internal */
+  pickAirGizmo(ray: THREE.Raycaster): boolean {
+    return this.airGizmo.visible && ray.intersectObject(this.airGizmo, true).length > 0;
   }
 
   // =====================================================================

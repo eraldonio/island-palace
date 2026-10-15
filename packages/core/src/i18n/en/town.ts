@@ -137,6 +137,7 @@ export const town: Record<string, string> = {
   '贴水面': 'On water',
   '贴地面': 'On ground',
   '悬空高度': 'Hover height',
+  '摆设顶上那支箭头可以直接拖：往上拖放高，往下拖放低。': 'You can drag the arrow above the prop: up to raise it, down to lower it.',
   '让它落在水面上（船、浮冰、礁石这类）': 'Sit it on the water surface (boats, ice floes, rocks)',
   '让它回到地面（海面上是坐在水面那一层）': 'Back to the ground (on water it sits on the sea surface)',
   '把「{name}」放到草地、海面或空中：点击放下 · <b>R</b> 旋转 · <b>Esc</b> 取消': 'Place “{name}” on grass, water or in the sky: click to drop · <b>R</b> rotate · <b>Esc</b> cancel',

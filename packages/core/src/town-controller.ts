@@ -28,8 +28,10 @@ const PEEK_DELAY = 280;
 const PROP_GAP = .6;
 /** 海面 / 空中能摆多远：离最远的海岸线之外这么多米 */
 const PROP_OUT = 30;
+/** 悬空高度的范围（米）：卡片滑杆和摆设顶上那支箭头共用 */
+const AIR_MIN = -3, AIR_MAX = 40;
 /** 每个摆设都有的通用参数：离落位基准的高度（米）——云、热气球这类可以放到天上去 */
-const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: -3, max: 40, step: .1, def: 0 };
+const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: AIR_MIN, max: AIR_MAX, step: .1, def: 0 };
 /** 卡片上显示的参数：种类自己的 + 通用高度 */
 const propSpecs = (kind: PropKind | undefined): ParamSpec[] => [...(kind?.params || []), PROP_ALT];
 /** 便签吸附的网格（和编辑器里物件摆放一致：5 cm） */
@@ -40,7 +42,7 @@ const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo
  * 卡片按钮的一档：跟着当前值放大（并对齐到 base 的整数倍）。
  * 便签尺寸能到 40 m、字号能到 2 m，固定档位（0.5 m / 0.05 m）那样要按几十次；四角拖动仍是自由的。
  */
-const coarseStep = (v: number, base: number, ratio: number) => Math.max(base, Math.round(v * ratio / base) * base);
+const coarseStep = (v: number, base: number, ratio: number) => Number(Math.max(base, Math.round(v * ratio / base) * base).toFixed(3));
 const DEG = Math.PI / 180;
 
 /** SVG 的子元素要放在 <svg> 里解析才是 SVG 元素：包一层再取出里面的节点（只有 <path> 的图标、插图里的片段） */
@@ -68,6 +70,28 @@ interface QuillLike {
   setSelection(index: number, length?: number): void;
   history: { clear(): void };
   focus(): void;
+  on(event: string, handler: () => void): void;
+}
+
+/** 便签落到屏幕上的那个四边形（`noteQuad` 的返回） */
+interface NoteQuad {
+  p00: ScreenPt; p10: ScreenPt; p01: ScreenPt; p11: ScreenPt;
+  ux: number; uy: number; vx: number; vy: number; uw: number; vh: number; mpx: number;
+}
+
+/** 屏幕 CSS 像素（相对 .kp-root）上的一个点 */
+interface ScreenPt { x: number; y: number }
+
+/**
+ * 把一个 DOM 元素铺到便签的那个四边形上。正交相机下地面上的平面投到屏幕上是仿射的，
+ * 所以 matrix(a,b,c,d,e,f) 就够了；基向量取单位长度，元素里的 1px 就是屏幕上的 1px
+ * （字和边框都不会被拉伸糊掉），元素的宽高就是四边形的投影边长。
+ */
+function placeQuad(el: HTMLElement, q: NoteQuad) {
+  el.style.transformOrigin = '0 0';
+  el.style.transform = `matrix(${q.ux / q.uw}, ${q.uy / q.uw}, ${q.vx / q.vh}, ${q.vy / q.vh}, ${q.p00.x}, ${q.p00.y})`;
+  el.style.width = `${q.uw}px`;
+  el.style.height = `${q.vh}px`;
 }
 
 export class TownController {
@@ -94,6 +118,8 @@ export class TownController {
   private noteLive: { id: string; regionId: string } | null = null;
   private noteResize: { regionId: string; noteId: string; corner: number; fixed: Vec2; before: string; moved: boolean } | null = null;
   private noteModal: { id: string; regionId: string } | null = null;
+  /** 富文本编辑器的自动保存计时器：停手 0.6 秒写一次便签 */
+  private noteSaveTimer: number | null = null;
   private quill: QuillLike | null = null;
   private quillReady: Promise<QuillLike> | null = null;
   private undoStack: string[] = [];
@@ -105,6 +131,8 @@ export class TownController {
   sculptMode = false;
   sculptBrush: 'expand' | 'shrink' = 'expand';
   private sculptDrag: { regionId: string; mode: 'expand' | 'shrink'; before: string; lastApply: number } | null = null;
+  /** 正在拖顶端那支箭头：把屏幕上的上下换算成悬空高度（米） */
+  private airDrag: { propId: string; air: number; y: number; perMeter: number } | null = null;
   private paletteSel = 0;
   private confirmResolve: ((ok: boolean) => void) | null = null;
   private planCache = new Map<string, DocumentFragment>();
@@ -154,6 +182,8 @@ export class TownController {
       }
     });
     v.on(v.ui.paletteWrap, 'pointerdown', (e: PointerEvent) => { if (e.target === v.ui.paletteWrap) this.closePalette(); });
+    // 点编辑器外面 = 关掉（内容已经自动保存过了）
+    v.on(v.ui.noteEditorWrap, 'pointerdown', (e: PointerEvent) => { if (e.target === v.ui.noteEditorWrap) this.closeNoteEditor(); });
     v.on(v.ui.townList, 'pointerover', (e: PointerEvent) => {
       const row = (e.target as HTMLElement).closest<HTMLElement>('.kp-list-row[data-id]');
       if (row) this.setHover(row.dataset.id);
@@ -191,7 +221,7 @@ export class TownController {
   private get docs() { return this.v.docs; }
   private get world() { return this.v.world; }
   /** 拖动 / 放置进行中：镜头所在的岛不要自动切换 */
-  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing || !!this.notePlacing || !!this.noteLive || !!this.noteResize || !!this.sculptDrag; }
+  get busy() { return !!this.drag || !!this.placing || !!this.propPlacing || !!this.notePlacing || !!this.noteLive || !!this.noteResize || !!this.sculptDrag || !!this.airDrag; }
 
   private layerOf(regionId: string): RegionLayer | undefined { return this.town.regions.get(regionId); }
   private regionById(id: string) { return this.world.regions.find(r => r.id === id); }
@@ -271,12 +301,14 @@ export class TownController {
       <div class="kp-note-live kp-hidden" data-ref="noteLive">
         <div class="kp-note-live-box" data-ref="noteLiveBox" contenteditable="true" spellcheck="false"></div>
       </div>
-      <div class="kp-note-handles kp-hidden" data-ref="noteHandles">${[0, 1, 2, 3].map(i => html`<div class="kp-note-handle" data-corner="${i}"></div>`)}</div>
+      <div class="kp-note-handles kp-hidden" data-ref="noteHandles">
+        <div class="kp-note-frame kp-hidden" data-ref="noteFrame"></div>${[0, 1, 2, 3].map(i => html`<div class="kp-note-handle" data-corner="${i}"></div>`)}
+      </div>
       <div class="kp-overlay kp-center kp-hidden" data-ref="noteEditorWrap">
         <div class="kp-note-modal kp-glass">
           <b>${t('编辑便签')}</b>
           <div class="kp-note-editor" data-ref="noteEditor"></div>
-          <div class="kp-row"><button data-act="noteEditorCancel">${t('取消')}</button><button class="kp-primary kp-grow" data-act="noteEditorSave">${t('完成')}</button></div>
+          <div class="kp-row"><span class="kp-note-saved" data-ref="noteSaved">${t('已保存')}</span><button class="kp-primary kp-grow" data-act="noteEditorSave">${t('完成')}</button></div>
         </div>
       </div>
       <div class="kp-marquee kp-hidden" data-ref="marquee"></div>`);
@@ -436,6 +468,11 @@ export class TownController {
         if (v.far) {
           this.setRegionHover(this.pickRegion(e));
           this.setPropHover(null);
+        } else if (this.selectedProp && v.pickAirGizmo(this.ray(e))) {
+          // 指着头顶那支箭头：光标换成上下箭头，不再高亮别的东西
+          this.setPropHover(null);
+          this.setHover(null);
+          v.setCursor('ns-resize');
         } else {
           const layer = this.layerOf(this.region.id);
           const g = layer && this.town.groundOf(this.ray(e), layer);
@@ -579,6 +616,7 @@ export class TownController {
   private updateMarker(valid = true) {
     const v = this.v;
     if (v.level !== 'town') return;
+    v.setAirGizmo(null);   // 「悬空高度」箭头只在选中单个摆设时出现（见 propMarker）
     const multiCount = this.selectedProps.size + this.selectedNotes.size;
     if (multiCount > 1) {
       let unionBox: THREE.Box3 | null = null;
@@ -617,14 +655,18 @@ export class TownController {
     v.setMarker(box, layer.lift + GRASS_Y + .07, .05, valid ? '#ef8235' : '#d9483b');
   }
 
-  /** 选中 / 拖动中的摆设：渲染层给的包围盒已经是世界坐标，直接铺在地面上 */
+  /** 选中 / 拖动中的摆设：渲染层给的包围盒已经是世界坐标，直接铺在地面上；顶上再立一支高度箭头 */
   private propMarker(propId: string, valid: boolean) {
     const v = this.v;
     const at = this.propAt(propId);
     const layer = at ? this.layerOf(at.region.id) : undefined;
     const box = at && layer ? this.town.propBox(at.region.id, propId) : null;
-    if (!at || !layer || !box) { v.setMarker(null); return; }
+    if (!at || !layer || !box) { v.setMarker(null); v.setAirGizmo(null); return; }
     v.setMarker(box, layer.lift + GRASS_Y + .07, .05, valid ? '#ef8235' : '#d9483b');
+    // 箭头只在摆设停下来的时候出现：拖动摆件、正在摆放（跟着指针走）时收起来，免得碍事
+    const moving = !!this.drag || !!this.propPlacing || !!this.notePlacing || !!this.placing;
+    const c = box.getCenter(new THREE.Vector3());
+    v.setAirGizmo(moving ? null : new THREE.Vector3(c.x, box.max.y + .2, c.z));
   }
 
   /** 选中 / 拖动中的便签：渲染层给的包围盒已经是世界坐标，直接铺在地面上 */
@@ -769,7 +811,8 @@ export class TownController {
         <button data-act="propRotate" title="${t('旋转 90°（R）')}">${rich(ICONS.rotr)} ${t('旋转')}</button>
         <button data-act="propDuplicate" title="${t('复制一份（⌘D）')}">${t('复制')}</button>
         <button class="kp-danger" data-act="propDelete" title="${t('删除这个摆设')}">${t('删除')}</button>
-      </div>`);
+      </div>
+      <div class="kp-note-sm">${t('摆设顶上那支箭头可以直接拖：往上拖放高，往下拖放低。')}</div>`);
     card.classList.remove('kp-hidden');
   }
 
@@ -1131,6 +1174,56 @@ export class TownController {
     if (layer.onLand(prop.pos[0], prop.pos[1], .4)) delete params.water;
     else params.water = true;
     prop.params = params;
+  }
+
+  /**
+   * 正交相机下：世界坐标里往上 1 米在屏幕上是多少像素。
+   * 拖顶上那支箭头时用它把像素换成米（同一个相机算一次就准，正交相机远近一样）。
+   */
+  private screenPerMeter(world: THREE.Vector3): number {
+    const cam = this.v.isoCam, rect = this.v.renderer.domElement.getBoundingClientRect();
+    const a = world.clone().project(cam).y;
+    const b = world.clone().add(new THREE.Vector3(0, 1, 0)).project(cam).y;
+    return Math.max(.5, Math.abs(b - a) * .5 * rect.height);
+  }
+
+  /** 摆设顶上那支「悬空高度」箭头被按住了就接管这次按下（光标也换成上下箭头） */
+  private startAirDrag(e: PointerEvent): boolean {
+    const v = this.v;
+    const at = this.selectedProp ? this.propAt(this.selectedProp) : null;
+    if (!at || v.far || v.level !== 'town' || this.placing || this.propPlacing) return false;
+    if (!v.pickAirGizmo(this.ray(e))) return false;
+    const box = this.town.propBox(at.region.id, at.prop.id);
+    const tip = box ? box.getCenter(new THREE.Vector3()).setY(box.max.y + .2) : new THREE.Vector3();
+    this.airDrag = { propId: at.prop.id, air: Number(at.prop.params?.air) || 0, y: e.clientY, perMeter: this.screenPerMeter(tip) };
+    try { v.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* 合成事件 */ }
+    v.setCursor('ns-resize');
+    return true;
+  }
+
+  /** 拖箭头：屏幕上下 = 高度增减。实时改参数（rAF 合批重建），撤销在松手时记一次 */
+  private moveAirDrag(e: PointerEvent) {
+    const d = this.airDrag;
+    if (!d) return;
+    const next = Math.round(clampNum(d.air + (d.y - e.clientY) / d.perMeter, AIR_MIN, AIR_MAX) * 20) / 20;
+    if (next === d.air) return;
+    d.air = next;
+    this.setPropParam('air', next, true);
+    // 卡片上的滑杆 / 数字框跟着走（拖动中不重画整张卡片）
+    const inp = this.v.ui.townCard.querySelector<HTMLInputElement>('input[data-param=air]');
+    if (inp) inp.value = String(next);
+    this.updateMarker();
+    this.v.invalidate();
+  }
+
+  private endAirDrag() {
+    const d = this.airDrag;
+    this.airDrag = null;
+    if (!d) return;
+    this.setPropParam('air', d.air, false);   // 松手：合一次撤销
+    this.renderCard();
+    this.updateMarker();
+    this.v.setCursor('');
   }
 
   /** 新摆设的落点：从镜头中心开始向外螺旋找第一块空地（找不到就先放在中心，用户可以再挪） */
@@ -1747,7 +1840,7 @@ export class TownController {
   }
 
   /** 便签局部坐标 → 屏幕 CSS 像素（相对 .kp-root） */
-  private noteScreen(layer: RegionLayer, note: W.PlacedNote, X: number, Z: number) {
+  private noteScreen(layer: RegionLayer, note: W.PlacedNote, X: number, Z: number): ScreenPt {
     const [lx, lz] = noteToWorld(note, X, Z);
     const p = new THREE.Vector3(lx, GRASS_Y + NOTE_LIFT, lz).applyMatrix4(layer.group.matrixWorld).project(this.v.isoCam);
     const r = this.v.renderer.domElement.getBoundingClientRect();
@@ -1759,7 +1852,7 @@ export class TownController {
    * 所以一个普通 DOM 元素用 matrix(a,b,c,d,e,f) 就能严丝合缝贴在便签上——
    * 也因此这里的文字是真正被光栅化的文字，比画进贴图清晰得多。
    */
-  private noteQuad(note: W.PlacedNote, layer: RegionLayer) {
+  private noteQuad(note: W.PlacedNote, layer: RegionLayer): NoteQuad {
     const c = noteCorners(note);
     const p00 = this.noteScreen(layer, note, c[0][0], c[0][1]);
     const p10 = this.noteScreen(layer, note, c[1][0], c[1][1]);
@@ -1771,36 +1864,48 @@ export class TownController {
     return { p00, p10, p01, p11, ux, uy, vx, vy, uw, vh, mpx: uw / Math.max(.2, note.w) };
   }
 
-  /** 每帧：把「直接在便签上写」的 DOM 和四个角贴到便签上（镜头动了也跟着） */
+  /** 每帧：把「直接在便签上写」的 DOM、选中框和四个角贴到便签上（镜头动了也跟着） */
   private positionNoteOverlays() {
     const v = this.v;
     const live = this.noteLive;
     const id = live ? live.id : this.selectedNote;
     const at = id ? this.noteAt(id) : null;
     const layer = at ? this.layerOf(at.region.id) : undefined;
-    const q = at && layer ? this.noteQuad(at.note, layer) : null;
-    const wrap = v.ui.noteLive;
-    if (q && live) {
-      wrap.style.transformOrigin = '0 0';
-      // 基向量取单位长度：元素里的 1px 就是屏幕上的 1px，字不会被拉伸糊掉
-      wrap.style.transform = `matrix(${q.ux / q.uw}, ${q.uy / q.uw}, ${q.vx / q.vh}, ${q.vy / q.vh}, ${q.p00.x}, ${q.p00.y})`;
-      wrap.style.width = `${q.uw}px`;
-      wrap.style.height = `${q.vh}px`;
+    const wrap = v.ui.noteLive, frame = v.ui.noteFrame, handles = v.ui.noteHandles;
+    const showLive = !!(at && layer && live);
+    const showFrame = !!(at && layer && this.selectedNote && !live);
+    if (!showLive && !showFrame) {
+      wrap.classList.add('kp-hidden');
+      frame.classList.add('kp-hidden');
+      handles.classList.add('kp-hidden');
+      return;
+    }
+    // 相机矩阵只在 renderer.render() 里更新，而 OrbitControls 和相机补间只改 position / quaternion。
+    // 不在这里补一次，投影用的就是上一帧的相机：DOM 会整整晚一帧，镜头一动就甩在便签后面。
+    v.isoCam.updateMatrixWorld();
+    const q = this.noteQuad(at!.note, layer!);
+    if (showLive) {
+      placeQuad(wrap, q);
       wrap.style.fontSize = `${Math.max(6, at!.note.fs * q.mpx)}px`;
       wrap.style.padding = `${Math.max(2, q.mpx * .14)}px`;
       wrap.classList.remove('kp-hidden');
     } else wrap.classList.add('kp-hidden');
 
-    const handles = v.ui.noteHandles;
-    if (q && this.selectedNote && !live) {
-      const kids = handles.children as HTMLCollectionOf<HTMLElement>;
+    if (showFrame) {
+      // 选中框和便签同一个矩阵：四条边严丝合缝压在纸面上，句柄就落在它的四个角
+      placeQuad(frame, q);
+      frame.classList.remove('kp-hidden');
       const pts = [q.p00, q.p10, q.p01, q.p11];
+      const kids = handles.querySelectorAll<HTMLElement>('.kp-note-handle');
       for (let i = 0; i < kids.length; i++) {
         kids[i].style.left = `${pts[i].x}px`;
         kids[i].style.top = `${pts[i].y}px`;
       }
       handles.classList.remove('kp-hidden');
-    } else handles.classList.add('kp-hidden');
+    } else {
+      frame.classList.add('kp-hidden');
+      handles.classList.add('kp-hidden');
+    }
   }
 
   // ---- 拖角改尺寸：宽 / 深各自独立，对角固定 ----
@@ -1873,6 +1978,8 @@ export class TownController {
         placeholder: t('写点什么…'),
         modules: { toolbar: [['bold', 'italic', 'underline'], [{ header: [1, 2, 3, false] }], [{ list: 'ordered' }, { list: 'bullet' }], ['link', 'clean']] },
       });
+      // 自动保存：停手就写回便签，不用记得按「完成」
+      q.on('text-change', () => this.scheduleNoteSave());
       this.quill = q;
       return q;
     });
@@ -1884,6 +1991,7 @@ export class TownController {
     if (!at) return;
     this.commitNoteLive();
     this.noteModal = { id, regionId: at.region.id };
+    this.setNoteSavedText(t('已保存'));
     this.v.ui.noteEditorWrap.classList.remove('kp-hidden');
     const quill = await this.quillFor();
     quill.setContents(quill.clipboard.convert({ html: W.sanitizeNoteHtml(at.note.html) }), 'silent');
@@ -1894,23 +2002,40 @@ export class TownController {
     quill.setSelection(quill.getLength() - 1, 0);
   }
 
-  /** 内容不参与撤销（和原地编辑一致） */
-  private saveNoteEditor() {
+  /** 编辑器底部的自动保存状态：写的时候「保存中…」，写回便签后「已保存」 */
+  private setNoteSavedText(text: string) {
+    const el = this.v.ui.noteSaved;
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
+  /** 停手 0.6 秒就写一次：一直打字也不会攒到最后才存 */
+  private scheduleNoteSave() {
+    if (this.noteSaveTimer !== null) window.clearTimeout(this.noteSaveTimer);
+    this.setNoteSavedText(t('保存中…'));
+    this.noteSaveTimer = window.setTimeout(() => { this.noteSaveTimer = null; this.flushNoteEditor(); }, 600);
+  }
+
+  /**
+   * 把编辑器里的内容写回便签（没变就什么都不做）。内容不参与撤销（和原地编辑一致）。
+   * 关掉编辑器（「完成」/ Esc / 点外面 / 离开这座岛）之前都会先走这一步，所以写的东西不会丢。
+   */
+  private flushNoteEditor() {
+    if (this.noteSaveTimer !== null) { window.clearTimeout(this.noteSaveTimer); this.noteSaveTimer = null; }
     const m = this.noteModal;
     if (!m) return;
-    this.noteModal = null;
-    this.v.ui.noteEditorWrap.classList.add('kp-hidden');
     const at = this.noteAt(m.id);
     const html_ = W.sanitizeNoteHtml(this.quill?.root.innerHTML || '');
-    if (!at || html_ === at.note.html) return;
+    if (!at || html_ === at.note.html) { this.setNoteSavedText(t('已保存')); return; }
     at.note.html = html_;
     this.town.rebuildNotes(m.regionId);
     this.v.worldChanged();
     this.v.invalidate();
+    this.setNoteSavedText(t('已保存'));
   }
 
   private closeNoteEditor() {
     if (!this.noteModal) return;
+    this.flushNoteEditor();
     this.noteModal = null;
     this.v.ui.noteEditorWrap?.classList.add('kp-hidden');
   }
@@ -2377,6 +2502,8 @@ export class TownController {
     if (e.button !== 0) return false;
     // 便签四角的句柄自己处理 pointerdown（拖角改尺寸），不要当成画布上的拖动
     if ((e.target as HTMLElement)?.closest?.('.kp-note-handle')) return false;
+    // 选中摆设时头顶那支「悬空高度」箭头优先接管（拖它上下移动）
+    if (this.startAirDrag(e)) return true;
     if (this.placing) { this.placing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (this.propPlacing) { this.propPlacing.down = { x: e.clientX, y: e.clientY }; return false; }
     if (this.notePlacing) { this.notePlacing.down = { x: e.clientX, y: e.clientY }; return false; }
@@ -2479,6 +2606,7 @@ export class TownController {
   }
 
   onPointerMove(e: PointerEvent): boolean {
+    if (this.airDrag) { this.moveAirDrag(e); return true; }
     if (this.sculptDrag) {
       this.applySculpt(e);
       return true;
@@ -2669,6 +2797,12 @@ export class TownController {
   }
 
   onPointerUp(e: PointerEvent): boolean {
+    if (this.airDrag) {
+      this.endAirDrag();
+      this.v.worldChanged();
+      this.v.invalidate();
+      return true;
+    }
     if (this.sculptDrag) {
       const before = this.sculptDrag.before;
       this.sculptDrag = null;
@@ -3008,8 +3142,7 @@ export class TownController {
       case 'noteRotate': this.rotateSelected(); return true;
       case 'noteEdit': if (this.selectedNote) void this.openNoteEditor(this.selectedNote); return true;
       case 'noteDelete': void this.deleteNote(); return true;
-      case 'noteEditorSave': this.saveNoteEditor(); return true;
-      case 'noteEditorCancel': this.closeNoteEditor(); return true;
+      case 'noteEditorSave': this.closeNoteEditor(); return true;
       case 'regionDeselect': this.selectRegion(null); return true;
       case 'toWorld': this.select(null); v.flyToWorld(); return true;
       case 'toPlanet': this.select(null); this.selectRegion(null); v.flyToPlanet(); return true;
