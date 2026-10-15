@@ -30,6 +30,10 @@ const PROP_GAP = .6;
 const PROP_OUT = 30;
 /** 悬空高度的范围（米）：卡片滑杆和摆设顶上那支箭头共用 */
 const AIR_MIN = -3, AIR_MAX = 40;
+/** 拖高度箭头的手感：鼠标走 1 像素 = 0.4 像素的高度（1:1 对高度来说太跳了） */
+const AIR_GEAR = .4;
+/** 缩得很远时每米的像素数很小，给个下限，免得 1 像素换掉好几米 */
+const AIR_MIN_PPM = 12;
 /** 每个摆设都有的通用参数：离落位基准的高度（米）——云、热气球这类可以放到天上去 */
 const PROP_ALT: ParamSpec = { key: 'air', label: '悬空高度', min: AIR_MIN, max: AIR_MAX, step: .1, def: 0 };
 /** 卡片上显示的参数：种类自己的 + 通用高度 */
@@ -133,6 +137,8 @@ export class TownController {
   private sculptDrag: { regionId: string; mode: 'expand' | 'shrink'; before: string; lastApply: number } | null = null;
   /** 正在拖顶端那支箭头：把屏幕上的上下换算成悬空高度（米） */
   private airDrag: { propId: string; air: number; y: number; perMeter: number } | null = null;
+  /** 箭头当前立在哪（拖高度时先把它跟着抬起来，参数重建要等下一帧） */
+  private airAt: THREE.Vector3 | null = null;
   private paletteSel = 0;
   private confirmResolve: ((ok: boolean) => void) | null = null;
   private planCache = new Map<string, DocumentFragment>();
@@ -617,6 +623,7 @@ export class TownController {
     const v = this.v;
     if (v.level !== 'town') return;
     v.setAirGizmo(null);   // 「悬空高度」箭头只在选中单个摆设时出现（见 propMarker）
+    this.airAt = null;
     const multiCount = this.selectedProps.size + this.selectedNotes.size;
     if (multiCount > 1) {
       let unionBox: THREE.Box3 | null = null;
@@ -666,7 +673,8 @@ export class TownController {
     // 箭头只在摆设停下来的时候出现：拖动摆件、正在摆放（跟着指针走）时收起来，免得碍事
     const moving = !!this.drag || !!this.propPlacing || !!this.notePlacing || !!this.placing;
     const c = box.getCenter(new THREE.Vector3());
-    v.setAirGizmo(moving ? null : new THREE.Vector3(c.x, box.max.y + .2, c.z));
+    this.airAt = moving ? null : new THREE.Vector3(c.x, box.max.y + .2, c.z);
+    v.setAirGizmo(this.airAt);
   }
 
   /** 选中 / 拖动中的便签：渲染层给的包围盒已经是世界坐标，直接铺在地面上 */
@@ -1201,18 +1209,24 @@ export class TownController {
     return true;
   }
 
-  /** 拖箭头：屏幕上下 = 高度增减。实时改参数（rAF 合批重建），撤销在松手时记一次 */
+  /**
+   * 拖箭头：屏幕上下 = 高度增减，但按 AIR_GEAR 放慢（1:1 对高度来说太跳了；按住 Shift 再细一倍）。
+   * 实时改参数（rAF 合批重建），箭头自己先跟着抬起来，撤消在松手时记一次。
+   */
   private moveAirDrag(e: PointerEvent) {
     const d = this.airDrag;
     if (!d) return;
-    const next = Math.round(clampNum(d.air + (d.y - e.clientY) / d.perMeter, AIR_MIN, AIR_MAX) * 20) / 20;
+    const gear = e.shiftKey ? AIR_GEAR * .25 : AIR_GEAR;
+    const perMeter = Math.max(d.perMeter, AIR_MIN_PPM);
+    const next = Math.round(clampNum(d.air + (d.y - e.clientY) * gear / perMeter, AIR_MIN, AIR_MAX) * 50) / 50;
     if (next === d.air) return;
+    const step = next - d.air;
     d.air = next;
     this.setPropParam('air', next, true);
-    // 卡片上的滑杆 / 数字框跟着走（拖动中不重画整张卡片）
+    // 参数重建要等下一帧（setPropParam 用 rAF 合批），这里先把箭头抬起来，拖起来才跟手
+    if (this.airAt) { this.airAt = this.airAt.clone().setY(this.airAt.y + step); this.v.setAirGizmo(this.airAt); }
     const inp = this.v.ui.townCard.querySelector<HTMLInputElement>('input[data-param=air]');
     if (inp) inp.value = String(next);
-    this.updateMarker();
     this.v.invalidate();
   }
 
